@@ -1,0 +1,1202 @@
+# EscalateAIV610082025.py — consolidated, syntax-fixed, and navigation-cleaned
+
+# ======================
+# Imports & Environment
+# ======================
+import os
+import re
+import time
+import datetime
+import threading
+import hashlib
+import sqlite3
+import smtplib
+import requests
+import imaplib
+import email
+from email.header import decode_header
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+
+import pandas as pd
+import numpy as np
+import streamlit as st
+
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+
+from dotenv import load_dotenv
+
+# -------------------------------
+# 📈 Analytics View
+# -------------------------------
+def show_analytics_view():
+    import pandas as pd
+    import streamlit as st
+    from advanced_enhancements import fetch_escalations
+
+    st.title("📊 Escalation Analytics")
+
+    df = fetch_escalations()
+
+    if df.empty:
+        st.warning("⚠️ No escalation data available.")
+        return
+
+    # 📈 Trend Over Time
+    st.subheader("📈 Escalation Volume Over Time")
+    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+    trend = df.groupby(df['timestamp'].dt.date).size()
+    st.line_chart(trend)
+
+    # 🔥 Severity Distribution
+    st.subheader("🔥 Severity Distribution")
+    st.bar_chart(df['severity'].value_counts())
+
+    # 🧠 Sentiment Breakdown
+    st.subheader("🧠 Sentiment Breakdown")
+    st.bar_chart(df['sentiment'].value_counts())
+
+    # ⏳ Ageing Buckets
+    st.subheader("⏳ Ageing Buckets")
+    df['age_days'] = (pd.Timestamp.now() - df['timestamp']).dt.days
+    bins = [0, 3, 7, 14, 30, 90]
+    labels = ["0–3d", "4–7d", "8–14d", "15–30d", "31–90d"]
+    df['age_bucket'] = pd.cut(df['age_days'], bins=bins, labels=labels)
+    st.bar_chart(df['age_bucket'].value_counts().sort_index())
+    
+# Optional add-ons (provided by your other files/modules)
+# Ensure enhancements.py and advanced_enhancements.py exist alongside this file
+assert os.path.exists("enhancements.py"), "❌ enhancements.py not found!"
+assert os.path.exists("advanced_enhancements.py") or os.path.exists("advanced_enhancements V6.09.py"), \
+    "❌ advanced_enhancements.py not found! (rename your V6.09 file to advanced_enhancements.py)"
+
+from enhancements import (
+    schedule_weekly_retraining,
+    render_analytics,
+    show_feature_importance,
+    is_duplicate,
+    generate_pdf_report,
+    render_sla_heatmap,
+    apply_dark_mode,
+    show_filter_summary,
+    get_escalation_template,
+    summarize_escalations,
+    # NOTE: We won't import fetch_escalations/train_model from enhancements here
+)
+
+# If your advanced file is named with spaces, rename it to advanced_enhancements.py.
+from advanced_enhancements import (
+    predict_resolution_eta,
+    show_shap_explanation,
+    detect_cosine_duplicates,
+    link_email_threads,
+    load_custom_plugins,
+    send_whatsapp_message,
+    generate_text_pdf,
+    render_model_metrics,
+    score_feedback_quality,
+    validate_escalation_schema,
+    log_escalation_action
+)
+
+# ===============
+# Configuration
+# ===============
+load_dotenv()
+
+# IMAP/SMTP/Teams config from .env
+EMAIL_SERVER = os.getenv("EMAIL_SERVER", "imap.gmail.com")
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASS = os.getenv("EMAIL_PASS") or ""
+
+SMTP_SERVER = os.getenv("EMAIL_SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", "587"))
+ALERT_RECIPIENT = os.getenv("EMAIL_RECEIVER", EMAIL_USER or "")
+TEAMS_WEBHOOK = os.getenv("MS_TEAMS_WEBHOOK_URL", "")
+EMAIL_SUBJECT = os.getenv("EMAIL_SUBJECT", "🚨 EscalateAI Alert")
+
+# SQLite DB
+DB_PATH = "escalations.db"
+
+# Escalation ID prefix (SESICE-25 + 5-digit sequence)
+ESCALATION_PREFIX = "SESICE-25"
+
+# Sentiment analyzer
+analyzer = SentimentIntensityAnalyzer()
+
+# Negative keywords to infer urgency/category
+NEGATIVE_KEYWORDS = {
+    "technical": ["fail", "break", "crash", "defect", "fault", "degrade", "damage", "trip", "malfunction", "blank", "shutdown", "discharge", "leak"],
+    "dissatisfaction": ["dissatisfy", "frustrate", "complain", "reject", "delay", "ignore", "escalate", "displease", "noncompliance", "neglect"],
+    "support": ["wait", "pending", "slow", "incomplete", "miss", "omit", "unresolved", "shortage", "no response"],
+    "safety": ["fire", "burn", "flashover", "arc", "explode", "unsafe", "leak", "corrode", "alarm", "incident"],
+    "business": ["impact", "loss", "risk", "downtime", "interrupt", "cancel", "terminate", "penalty"]
+}
+
+# Processed email hashes/UID tracking
+processed_email_uids_lock = threading.Lock()
+global_seen_hashes = set()
+
+# UI Colors
+STATUS_COLORS = {
+    "Open": "#FFA500",        # Orange
+    "In Progress": "#1E90FF", # Dodger Blue
+    "Resolved": "#32CD32"     # Lime Green
+}
+SEVERITY_COLORS = {
+    "critical": "#FF4500",    # OrangeRed
+    "major": "#FF8C00",       # DarkOrange
+    "minor": "#228B22"        # ForestGreen
+}
+URGENCY_COLORS = {
+    "high": "#DC143C",        # Crimson
+    "normal": "#008000"       # Green
+}
+
+# ==================
+# Helper / DB Utils
+# ==================
+
+# --- Risk Logic ---
+def fallback_escalation(severity, urgency, sentiment):
+    risk_severity = severity.lower() in ["critical", "high"]
+    risk_urgency = urgency.lower() in ["high", "immediate"]
+    risk_sentiment = sentiment.lower() in ["negative", "very negative"]
+
+    if risk_severity + risk_urgency + risk_sentiment >= 2:
+        return "Yes"
+    return "No"
+    
+def summarize_issue_text(issue_text: str) -> str:
+    clean_text = re.sub(r'\s+', ' ', issue_text or "").strip()
+    return clean_text[:120] + "..." if len(clean_text) > 120 else clean_text
+
+def get_next_escalation_id() -> str:
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(f"SELECT id FROM escalations WHERE id LIKE '{ESCALATION_PREFIX}%' ORDER BY id DESC LIMIT 1")
+    last = cur.fetchone()
+    conn.close()
+
+    if last:
+        last_id = last[0]
+        last_num_str = last_id.replace(ESCALATION_PREFIX, "")
+        try:
+            last_num = int(last_num_str)
+        except ValueError:
+            last_num = 0
+        next_num = last_num + 1
+    else:
+        next_num = 1
+
+    return f"{ESCALATION_PREFIX}{str(next_num).zfill(5)}"
+
+import traceback
+
+def ensure_schema():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+
+        # Create table if not exists
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS escalations (
+                id TEXT PRIMARY KEY,
+                customer TEXT,
+                issue TEXT,
+                sentiment TEXT,
+                urgency TEXT,
+                severity TEXT,
+                criticality TEXT,
+                category TEXT,
+                status TEXT,
+                timestamp TEXT,
+                action_taken TEXT,
+                owner TEXT,
+                owner_email TEXT,
+                escalated TEXT,
+                priority TEXT,
+                likely_to_escalate TEXT,
+                action_owner TEXT,
+                status_update_date TEXT,
+                user_feedback TEXT
+            )
+        ''')
+
+        # Ensure new columns exist
+        for col in ["owner_email", "status_update_date", "user_feedback", "likely_to_escalate"]:
+            try:
+                cur.execute(f"SELECT {col} FROM escalations LIMIT 1")
+            except (sqlite3.OperationalError, sqlite3.ProgrammingError):
+                try:
+                    cur.execute(f"ALTER TABLE escalations ADD COLUMN {col} TEXT")
+                    print(f"✅ Added column: {col}")
+                except Exception as e:
+                    print(f"❌ Failed to add column '{col}': {e}")
+                    traceback.print_exc()
+
+        try:
+            conn.commit()
+            print("✅ Schema committed successfully.")
+        except Exception as e:
+            print("❌ Commit failed:")
+            traceback.print_exc()
+            conn.rollback()
+
+    except Exception as e:
+        print("❌ ensure_schema() failed:")
+        traceback.print_exc()
+    finally:
+        conn.close()
+
+def generate_issue_hash(issue_text: str) -> str:
+    patterns_to_remove = [
+        r"[-]+[ ]*Forwarded message[ ]*[-]+",
+        r"From:.*", r"Sent:.*", r"To:.*", r"Subject:.*",
+        r">.*",                   # quoted lines
+        r"On .* wrote:",
+        r"\n\s*\n"
+    ]
+    for pat in patterns_to_remove:
+        issue_text = re.sub(pat, "", issue_text or "", flags=re.IGNORECASE)
+    clean_text = re.sub(r'\s+', ' ', (issue_text or "").lower().strip())
+    return hashlib.md5(clean_text.encode()).hexdigest()
+
+def insert_escalation(customer, issue, sentiment, urgency, severity, criticality, category, escalation_flag, likely_to_escalate="No", owner_email=""):
+    ...
+    cur.execute('''
+    INSERT INTO escalations (
+        id, customer, issue, sentiment, urgency, severity, criticality, category,
+        status, timestamp, escalated, priority, escalation_flag,
+        action_taken, owner, action_owner, status_update_date, user_feedback, owner_email, likely_to_escalate
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        new_id, customer, issue, sentiment, urgency, severity, criticality, category,
+        "Open", now, escalation_flag, "normal", escalation_flag,
+        "", "", "", "", "", owner_email, likely_to_escalate
+    ))
+    conn.commit()
+    conn.close()
+
+def fetch_escalations() -> pd.DataFrame:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        df = pd.read_sql("SELECT * FROM escalations", conn)
+    except Exception as e:
+        st.error(f"Error reading escalations table: {e}")
+        df = pd.DataFrame()
+    finally:
+        conn.close()
+    return df
+
+def update_escalation_status(esc_id, status, action_taken, action_owner, owner_email=None, feedback=None, sentiment=None, criticality=None, notes=None):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute('''
+        UPDATE escalations
+        SET status = ?, action_taken = ?, action_owner = ?, status_update_date = ?,
+            owner_email = ?, user_feedback = ?, sentiment = ?, criticality = ?
+        WHERE id = ?
+    ''', (
+        status,
+        action_taken,
+        action_owner,
+        datetime.datetime.now().isoformat(),
+        owner_email,
+        notes,
+        sentiment,
+        criticality,
+        esc_id
+    ))
+    conn.commit()
+    conn.close()
+    # Audit
+    try:
+        log_escalation_action("update_status", esc_id, action_owner or "system",
+                              f"status={status}; action_taken={action_taken}")
+    except Exception:
+        pass
+
+# -------------------------------
+# ⚙️ Admin Tools Panel
+# -------------------------------
+def show_admin_panel():
+    import streamlit as st
+    import pandas as pd
+    import sqlite3
+    from advanced_enhancements import (
+        validate_escalation_schema,
+        log_escalation_action,
+        fetch_escalations
+    )
+
+    st.title("⚙️ Admin Tools")
+
+    # 🔧 Schema Validation
+    if st.button("🔍 Validate DB Schema"):
+        try:
+            validate_escalation_schema()
+            st.success("✅ Schema validated and healed.")
+        except Exception as e:
+            st.error(f"❌ Schema validation failed: {e}")
+
+    # 📄 Audit Log Preview
+    st.subheader("📄 Audit Log Preview")
+
+    try:
+        # Ensure audit_log table exists
+        log_escalation_action("init", "N/A", "system", "Initializing audit log table")
+
+        conn = sqlite3.connect("escalations.db")
+        df = pd.read_sql("SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT 100", conn)
+        conn.close()
+
+        st.dataframe(df)
+
+    except Exception as e:
+        st.warning("⚠️ Audit log not available.")
+        st.exception(e)
+
+    # 📝 Manual Log Entry
+    st.subheader("📝 Manual Audit Entry")
+    with st.form("manual_log"):
+        action = st.text_input("Action Type")
+        case_id = st.text_input("Case ID")
+        user = st.text_input("User")
+        details = st.text_area("Details")
+        submitted = st.form_submit_button("Log Action")
+        if submitted:
+            try:
+                log_escalation_action(action, case_id, user, details)
+                st.success("✅ Action logged.")
+            except Exception as e:
+                st.error(f"❌ Failed to log action: {e}")
+
+# ============
+# Email Utils
+# ============
+def parse_emails():
+    """Parse UNSEEN emails and return list of {'customer','issue'} summaries.
+       Uses normalized hashing to skip repeats."""
+    emails_out = []
+    conn = None
+    try:
+        conn = imaplib.IMAP4_SSL(EMAIL_SERVER)
+        conn.login(EMAIL_USER, EMAIL_PASS)
+        conn.select("inbox")
+        _, messages = conn.search(None, "UNSEEN")
+        for num in messages[0].split():
+            _, msg_data = conn.fetch(num, "(RFC822)")
+            for response_part in msg_data:
+                if isinstance(response_part, tuple):
+                    msg = email.message_from_bytes(response_part[1])
+                    subject = decode_header(msg.get("Subject", ""))[0][0]
+                    if isinstance(subject, bytes):
+                        subject = subject.decode(errors='ignore')
+                    from_ = msg.get("From", "unknown")
+
+                    body = ""
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            if part.get_content_type() == "text/plain":
+                                try:
+                                    body = part.get_payload(decode=True).decode(errors='ignore')
+                                except Exception:
+                                    body = ""
+                                break
+                    else:
+                        try:
+                            body = msg.get_payload(decode=True).decode(errors='ignore')
+                        except Exception:
+                            body = ""
+
+                    full_text = f"{subject} - {body}"
+                    hash_val = generate_issue_hash(full_text)
+                    if hash_val not in global_seen_hashes:
+                        global_seen_hashes.add(hash_val)
+                        summary = summarize_issue_text(full_text)
+                        emails_out.append({"customer": from_, "issue": summary})
+    except Exception as e:
+        st.error(f"Failed to parse emails: {e}")
+    finally:
+        if conn:
+            try:
+                conn.logout()
+            except Exception:
+                pass
+    return emails_out
+
+# ==========
+# NLP/Tags
+# ==========
+def analyze_issue(issue_text: str):
+    scores = analyzer.polarity_scores(issue_text or "")
+    compound = scores["compound"]
+    if compound < -0.05:
+        sentiment = "negative"
+    elif compound > 0.05:
+        sentiment = "positive"
+    else:
+        sentiment = "neutral"
+
+    text_lower = (issue_text or "").lower()
+    urgency = "high" if any(word in text_lower for cat in NEGATIVE_KEYWORDS.values() for word in cat) else "normal"
+
+    category = None
+    for cat, keywords in NEGATIVE_KEYWORDS.items():
+        if any(k in text_lower for k in keywords):
+            category = cat
+            break
+
+    if category in ["safety", "technical"]:
+        severity = "critical"
+    elif category in ["support", "business"]:
+        severity = "major"
+    else:
+        severity = "minor"
+
+    criticality = "high" if (sentiment == "negative" and urgency == "high") else "medium"
+    escalation_flag = "Yes" if (urgency == "high" or sentiment == "negative") else "No"
+    return sentiment, urgency, severity, criticality, category or "other", escalation_flag
+
+# =========
+# ML Model
+# =========
+def train_model():
+    df = fetch_escalations()
+    if df.shape[0] < 20:
+        return None
+    df = df.dropna(subset=['sentiment', 'urgency', 'severity', 'criticality', 'likely_to_escalate'])
+    if df.empty:
+        return None
+    X = pd.get_dummies(df[['sentiment', 'urgency', 'severity', 'criticality']])
+    y = df['likely_to_escalate'].apply(lambda x: 1 if str(x).strip().lower() == 'yes' else 0)
+    if y.nunique() < 2:
+        return None
+    X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42)
+    model = RandomForestClassifier(random_state=42)
+    model.fit(X_train, y_train)
+    return model
+
+def predict_escalation(model, sentiment, urgency, severity, criticality):
+    if model is None:
+        return "No"
+    X_pred = pd.DataFrame([{
+        f"sentiment_{sentiment}": 1,
+        f"urgency_{urgency}": 1,
+        f"severity_{severity}": 1,
+        f"criticality_{criticality}": 1
+    }])
+    X_pred = X_pred.reindex(columns=model.feature_names_in_, fill_value=0)
+    pred = model.predict(X_pred)
+    return "Yes" if int(pred[0]) == 1 else "No"
+
+# =========
+# Alerting
+# =========
+def send_alert(message: str, via: str = "email", recipient: str | None = None):
+    if via == "email":
+        try:
+            msg = MIMEText(message, 'plain', 'utf-8')
+            msg['Subject'] = EMAIL_SUBJECT
+            msg['From'] = EMAIL_USER
+            msg['To'] = recipient if recipient else ALERT_RECIPIENT
+
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+                server.starttls()
+                if EMAIL_USER and EMAIL_PASS:
+                    server.login(EMAIL_USER, EMAIL_PASS)
+                server.sendmail(msg['From'], [msg['To']], msg.as_string())
+        except Exception as e:
+            st.error(f"Email alert failed: {e}")
+
+    elif via == "teams":
+        try:
+            if not TEAMS_WEBHOOK:
+                st.error("MS Teams webhook URL is not configured.")
+                return
+            response = requests.post(
+                TEAMS_WEBHOOK,
+                json={"text": message},
+                headers={"Content-Type": "application/json"}
+            )
+            if response.status_code != 200:
+                st.error(f"Teams alert failed: {response.status_code} - {response.text}")
+        except Exception as e:
+            st.error(f"Teams alert failed: {e}")
+
+# ===========================
+# Background Email Polling
+# ===========================
+def email_polling_job():
+    """Poll emails every 60 seconds; analyze and insert."""
+    while True:
+        model = train_model()
+        emails = parse_emails()
+        with processed_email_uids_lock:
+            for e in emails:
+                issue = e["issue"]
+                customer = e["customer"]
+                sent, urg, sev, crit, cat, esc = analyze_issue(issue)
+                likely_to_escalate = predict_escalation(model, sent, urg, sev, crit)
+                insert_escalation(customer, issue, sent, urg, sev, crit, cat, esc, likely_to_escalate)
+        time.sleep(60)
+
+# ================
+# Streamlit Setup
+# ================
+st.set_page_config(page_title="Escalation Management", layout="wide")
+
+# Ensure DB schema exists before any UI interactions
+ensure_schema()
+try:
+    validate_escalation_schema()
+except Exception:
+    pass
+
+# Optional: load custom plugins
+try:
+    load_custom_plugins()
+except Exception:
+    pass
+
+# Header / Branding
+st.markdown(
+    """
+    <style>
+    header h1 { margin: 0; padding-left: 20px; }
+    </style>
+    <header>
+        <div>
+            <h1>🚨 EscalateAI – AI Based Customer Escalation Prediction & Management Tool</h1>
+        </div>
+    </header>
+    """,
+    unsafe_allow_html=True
+)
+
+# =====================
+# Sidebar & Navigation
+# =====================
+st.sidebar.title("🔍 Navigation")
+page = st.sidebar.radio("Go to", [
+    "📊 Main Dashboard",
+    "📈 Analytics",
+    "🔥 SLA Heatmap",
+    "🧠 Enhancements",
+    "⚙️ Admin Tools"
+])
+
+# ===============================
+# Continuous if/elif page routing
+# ===============================
+if page == "📊 Main Dashboard":
+    # --------------------------
+    # Sidebar: Email Integration
+    # --------------------------
+    st.sidebar.markdown("### 📩 Email Integration")
+    if st.sidebar.button("Fetch Emails"):
+        emails = parse_emails()
+        for e in emails:
+            issue, customer = e["issue"], e["customer"]
+            sentiment, urgency, severity, criticality, category, escalation_flag = analyze_issue(issue)
+            insert_escalation(customer, issue, sentiment, urgency, severity, criticality, category, escalation_flag)
+        st.sidebar.success(f"✅ {len(emails)} emails processed")
+
+
+# 🔍 Sidebar: Escalation Filters
+st.sidebar.markdown("### 🔍 Escalation Filters")
+escalation_filter = st.sidebar.radio("Escalation View", ["All", "Likely to Escalate", "Not Likely"])
+
+# Load and preprocess data
+df_all = fetch_escalations()
+df_all["timestamp"] = pd.to_datetime(df_all["timestamp"], errors="coerce")
+
+# Apply fallback escalation logic
+def fallback_escalation(severity, urgency, sentiment):
+    risk_severity = severity.lower() in ["critical", "high"]
+    risk_urgency = urgency.lower() in ["high", "immediate"]
+    risk_sentiment = sentiment.lower() in ["negative", "very negative"]
+    return "Yes" if risk_severity + risk_urgency + risk_sentiment >= 2 else "No"
+
+df_all["likely_to_escalate"] = df_all.apply(
+    lambda row: fallback_escalation(
+        str(row.get("severity", "")),
+        str(row.get("urgency", "")),
+        str(row.get("sentiment", ""))
+    ),
+    axis=1
+)
+
+# Apply filter
+if escalation_filter == "Likely to Escalate":
+    filtered_df = df_all[df_all["likely_to_escalate"] == "Yes"]
+elif escalation_filter == "Not Likely":
+    filtered_df = df_all[df_all["likely_to_escalate"] == "No"]
+else:
+    filtered_df = df_all.copy()
+
+# ✅ Kanban Board Rendering
+st.subheader("📊 Escalation Kanban Board")
+filtered_df["status"] = filtered_df["status"].fillna("Open").str.strip().str.title()
+counts = filtered_df["status"].value_counts()
+st.markdown(f"**Open:** {counts.get('Open', 0)} | **In Progress:** {counts.get('In Progress', 0)} | **Resolved:** {counts.get('Resolved', 0)}")
+
+col1, col2, col3 = st.columns(3)
+status_columns = {"Open": col1, "In Progress": col2, "Resolved": col3}
+
+for status_name, col in status_columns.items():
+    with col:
+        col.markdown(
+            f"<h3 style='background-color:{STATUS_COLORS[status_name]};color:white;padding:8px;border-radius:5px;text-align:center;'>{status_name}</h3>",
+            unsafe_allow_html=True
+        )
+        bucket = filtered_df[filtered_df["status"] == status_name]
+        for _, row in bucket.iterrows():
+            try:
+                likely_to_escalate = row.get("likely_to_escalate", "No")
+                summary = summarize_issue_text(row.get("issue", ""))
+                expander_label = f"{row.get('id', 'N/A')} - {row.get('customer', 'Unknown')} 🚩 {summary}"
+
+                escalated_color = "#c0392b" if likely_to_escalate == "Yes" else "#7f8c8d"
+
+                with st.expander(f"📂 {expander_label}", expanded=False):
+                    st.markdown("**📈 Likely to Escalate**")
+                    st.markdown(
+                        f"<div style='background-color:{escalated_color};padding:6px;border-radius:5px;color:white;text-align:center'>{likely_to_escalate}</div>",
+                        unsafe_allow_html=True
+                    )
+                    # Add your metadata, buttons, and editable fields here
+            except Exception as e:
+                st.error(f"Error rendering case #{row.get('id', 'Unknown')}: {e}")
+
+    # --------------------------
+    # Sidebar: Upload & Analyze
+    # --------------------------
+    st.sidebar.header("📁 Upload Escalation Sheet")
+    uploaded_file = st.sidebar.file_uploader("Choose an Excel file", type=["xlsx"])
+    if uploaded_file:
+        try:
+            df_excel = pd.read_excel(uploaded_file)
+            st.sidebar.success("✅ Excel file loaded successfully.")
+        except Exception as e:
+            st.sidebar.error(f"❌ Failed to read Excel file: {e}")
+            st.stop()
+
+        required_columns = ["Customer", "Issue"]
+        missing_cols = [c for c in required_columns if c not in df_excel.columns]
+        if missing_cols:
+            st.sidebar.error(f"Missing required columns: {', '.join(missing_cols)}")
+            st.stop()
+
+        if st.sidebar.button("🔍 Analyze & Insert"):
+            model = train_model()
+            processed_count = 0
+            for idx, row in df_excel.iterrows():
+                issue = str(row.get("Issue", "")).strip()
+                customer = str(row.get("Customer", "Unknown")).strip()
+                if not issue:
+                    st.warning(f"⚠️ Row {idx + 1} skipped: empty issue text.")
+                    continue
+                issue_summary = summarize_issue_text(issue)
+                sentiment, urgency, severity, criticality, category, escalation_flag = analyze_issue(issue)
+                likely_to_escalate = predict_escalation(model, sentiment, urgency, severity, criticality)
+                insert_escalation(customer, issue_summary, sentiment, urgency, severity, criticality, category, escalation_flag, likely_to_escalate)
+                processed_count += 1
+            st.sidebar.success(f"🎯 {processed_count} rows processed successfully.")
+
+    # --------------------------
+    # Sidebar: SLA Monitoring
+    # --------------------------
+    st.sidebar.markdown("### ⏰ SLA Monitor")
+    if st.sidebar.button("Trigger SLA Check"):
+        df_tmp = fetch_escalations()
+        df_tmp['timestamp'] = pd.to_datetime(df_tmp['timestamp'], errors='coerce')
+        breaches = df_tmp[(df_tmp['status'] != 'Resolved') & (df_tmp['priority'] == 'high') &
+                          ((datetime.datetime.now() - df_tmp['timestamp']) > datetime.timedelta(minutes=10))]
+        if not breaches.empty:
+            alert_msg = f"🚨 SLA breach for {len(breaches)} case(s)!"
+            send_alert(alert_msg, via="teams")
+            send_alert(alert_msg, via="email")
+            st.sidebar.success("✅ Alerts sent")
+        else:
+            st.sidebar.info("All SLAs healthy")
+
+    # --------------------------
+    # Sidebar: Filters
+    # --------------------------
+    st.sidebar.markdown("### 🔍 Escalation Filters")
+    view = st.sidebar.radio("Escalation View", ["All", "Likely to Escalate", "Not Likely"])
+
+    df_all = fetch_escalations()
+    df_all['timestamp'] = pd.to_datetime(df_all['timestamp'], errors='coerce')
+
+    # Banner if breaches exist
+    breaches_banner = df_all[(df_all['status'] != 'Resolved') & (df_all['priority'] == 'high') &
+                             ((datetime.datetime.now() - df_all['timestamp']) > datetime.timedelta(minutes=10))]
+    if not breaches_banner.empty:
+        st.sidebar.markdown(
+            f"<div style='background:#dc3545;padding:8px;border-radius:5px;color:white;text-align:center;'>"
+            f"<strong>🚨 {len(breaches_banner)} SLA Breach(s) Detected</strong></div>",
+            unsafe_allow_html=True
+        )
+
+    # Normalized select options to your schema
+    status_opt = st.sidebar.selectbox("Status", ["All", "Open", "In Progress", "Resolved"], index=0)
+    severity_opt = st.sidebar.selectbox("Severity", ["All", "minor", "major", "critical"], index=0)
+    sentiment_opt = st.sidebar.selectbox("Sentiment", ["All", "positive", "neutral", "negative"], index=0)
+    category_opt = st.sidebar.selectbox("Category", ["All", "technical", "support", "dissatisfaction", "safety", "business", "other"], index=0)
+
+    filtered_df = df_all.copy()
+    if status_opt != "All":
+        filtered_df = filtered_df[filtered_df["status"].str.strip().str.title() == status_opt]
+    if severity_opt != "All":
+        filtered_df = filtered_df[filtered_df["severity"].str.lower() == severity_opt.lower()]
+    if sentiment_opt != "All":
+        filtered_df = filtered_df[filtered_df["sentiment"].str.lower() == sentiment_opt.lower()]
+    if category_opt != "All":
+        filtered_df = filtered_df[filtered_df["category"].str.lower() == category_opt.lower()]
+    if view == "Likely to Escalate":
+        filtered_df = filtered_df[filtered_df["likely_to_escalate"].str.lower() == "yes"]
+    elif view == "Not Likely":
+        filtered_df = filtered_df[filtered_df["likely_to_escalate"].str.lower() != "yes"]
+
+        
+    # --------------------------
+    # Sidebar: Manual Alerts
+    # --------------------------
+    st.sidebar.markdown("### 🔔 Manual Notifications")
+    manual_msg = st.sidebar.text_area("Compose Alert", "🚨 Test alert from EscalateAI")
+    if st.sidebar.button("Send MS Teams"):
+        send_alert(manual_msg, via="teams")
+        st.sidebar.success("✅ MS Teams alert sent")
+    if st.sidebar.button("Send Email"):
+        send_alert(manual_msg, via="email")
+        st.sidebar.success("✅ Email alert sent")
+
+    # --------------------------
+    # Sidebar: WhatsApp Alerts
+    # --------------------------
+    st.sidebar.markdown("### 📲 WhatsApp Alerts")
+    status_check = st.sidebar.selectbox("Case Status", ["Open", "In Progress", "Resolved"])
+    if status_check == "Resolved":
+        df_resolved = df_all[df_all["status"].str.strip().str.title() == "Resolved"]
+        if not df_resolved.empty:
+            escalation_id = st.sidebar.selectbox(
+                "🔢 Select Resolved Escalation ID",
+                df_resolved["id"].astype(str).tolist()
+            )
+            phone = st.sidebar.text_input("📞 Phone Number", "+91", help="Include country code (e.g., +91)")
+            w_msg = st.sidebar.text_area("📨 Message", f"Your issue with ID {escalation_id} has been resolved. Thank you!")
+            if st.sidebar.button("Send WhatsApp"):
+                try:
+                    # If your send_whatsapp_message is configured:
+                    # ok = send_whatsapp_message(phone, w_msg)
+                    ok = True  # placeholder
+                    if ok:
+                        st.sidebar.success(f"✅ WhatsApp sent to {phone} for Escalation ID {escillation_id}")
+                    else:
+                        st.sidebar.error("❌ WhatsApp API returned failure")
+                except Exception as e:
+                    st.sidebar.error(f"❌ WhatsApp send failed: {e}")
+        else:
+            st.sidebar.warning("No resolved escalations found.")
+    else:
+        st.sidebar.info("WhatsApp alerts are only available for 'Resolved' cases.")
+
+    # --------------------------
+    # Sidebar: Downloads
+    # --------------------------
+    st.sidebar.markdown("### 📤 Downloads")
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        if st.button("⬇️ All Complaints"):
+            csv = fetch_escalations().to_csv(index=False)
+            st.download_button("Download CSV", csv, file_name="escalations.csv", mime="text/csv")
+    with col2:
+        if st.button("⬇️ Escalated Only"):
+            df_esc_only = fetch_escalations()
+            df_esc_only = df_esc_only[df_esc_only["escalated"].str.lower() == "yes"]
+            if df_esc_only.empty:
+                st.info("No escalated cases.")
+            else:
+                out_path = "escalated_cases.xlsx"
+                with pd.ExcelWriter(out_path) as writer:
+                    df_esc_only.to_excel(writer, index=False)
+                with open(out_path, "rb") as f:
+                    st.download_button("Download Excel", f, file_name=out_path,
+                                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    # --------------------------
+    # Sidebar: Auto Refresh etc.
+    # --------------------------
+    auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh", value=False)
+    refresh_interval = st.sidebar.slider("Refresh Interval (sec)", 10, 60, 30)
+    compact_mode = st.sidebar.checkbox("📱 Compact Mode", value=False)
+    if auto_refresh:
+        time.sleep(refresh_interval)
+        st.rerun()
+    if st.sidebar.button("🔁 Manual Refresh"):
+        st.rerun()
+
+    # --------------------------
+    # Main Tabs & Kanban Board
+    # --------------------------
+    tabs = st.tabs(["🗃️ All", "🚩 Likely to Escalate", "🔁 Feedback & Retraining", "📊 Analytics"])
+    with tabs[0]:
+        
+        st.subheader("📊 Escalation Kanban Board")
+        df_view = filtered_df.copy()
+        df_view["status"] = df_view["status"].fillna("Open").str.strip().str.title()
+        counts = df_view['status'].value_counts()
+        st.markdown(f"**Open:** {counts.get('Open', 0)} | **In Progress:** {counts.get('In Progress', 0)} | **Resolved:** {counts.get('Resolved', 0)}")
+
+        col1, col2, col3 = st.columns(3)
+        status_columns = {"Open": col1, "In Progress": col2, "Resolved": col3}
+
+        for status_name, col in status_columns.items():
+            with col:
+                col.markdown(
+                    f"<h3 style='background-color:{STATUS_COLORS[status_name]};color:white;padding:8px;border-radius:5px;text-align:center;'>{status_name}</h3>",
+                    unsafe_allow_html=True
+                )
+                bucket = df_view[df_view["status"] == status_name]
+                for _, row in bucket.iterrows():
+                    try:
+                        flag = "🚩" if str(row.get('likely_to_escalate', '')).lower() == 'yes' else ""
+                        summary = summarize_issue_text(row.get('issue', ''))
+                        expander_label = f"{row.get('id', 'N/A')} - {row.get('customer', 'Unknown')} {flag} – {summary}"
+                        prefix = f"case_{row.get('id', 'N/A')}"
+
+                        # Safe field extraction
+                        severity = (row.get("severity") or "minor").lower()
+                        urgency = (row.get("urgency") or "normal").lower()
+                        criticality = (row.get("criticality") or "medium").capitalize()
+                        category = (row.get("category") or "other").capitalize()
+                        sentiment = (row.get("sentiment") or "neutral").capitalize()
+                        likely_to_escalate = fallback_escalation(
+                            row.get("severity", ""),
+                            row.get("urgency", ""),
+                            row.get("sentiment", "")
+                        )
+
+
+                        # Color mapping
+                        header_color = SEVERITY_COLORS.get(severity, "#7f8c8d")
+                        urgency_color = URGENCY_COLORS.get(urgency, "#7f8c8d")
+                        sentiment_color = {
+                            "Negative": "#e74c3c",
+                            "Positive": "#2ecc71",
+                            "Neutral": "#f39c12"
+                        }.get(sentiment, "#7f8c8d")
+                        escalated_color = "#c0392b" if likely_to_escalate == "Yes" else "#7f8c8d"
+                        #st.markdown("**📈 Likely to Escalate**")
+                        #st.markdown(
+                         #   f"<div style='background-color:{escalated_color};padding:6px;border-radius:5px;color:white;text-align:center'>{likely_to_escalate}</div>",
+                         #  unsafe_allow_html=True
+                        #)
+
+                        
+                        # Ageing
+                        try:
+                            ts = pd.to_datetime(row.get("timestamp"))
+                            now = datetime.datetime.now()
+                            delta = now - ts
+                            days = delta.days
+                            hours, remainder = divmod(delta.seconds, 3600)
+                            minutes, _ = divmod(remainder, 60)
+                            ageing_str = f"{days}d {hours}h {minutes}m"
+                            total_hours = delta.total_seconds() / 3600
+                            ageing_color = "#2ecc71" if total_hours < 12 else "#f39c12" if total_hours < 24 else "#e74c3c"
+                        except Exception:
+                            ageing_str = "N/A"
+                            ageing_color = "#7f8c8d"
+
+                        with st.expander(f"📂 {expander_label}", expanded=False):
+                            if not compact_mode:
+                                colA, colB, colC, colD = st.columns([1, 2, 2, 1])
+                                with colB:
+                                    if st.button("✔️ Resolved", key=f"{prefix}_resolved"):
+                                        owner_email = row.get("owner_email", EMAIL_USER)
+                                        update_escalation_status(row['id'], "Resolved",
+                                                                 row.get("action_taken", ""),
+                                                                 row.get("owner", ""),
+                                                                 owner_email)
+                                        send_alert("Case marked as resolved.", via="email", recipient=owner_email)
+                                        send_alert("Case marked as resolved.", via="teams")
+                                with colA:
+                                    st.markdown(
+                                        f"<div style='background-color:{ageing_color};padding:6px;border-radius:5px;color:white;text-align:center'>"
+                                        f"Age: {ageing_str}</div>",
+                                        unsafe_allow_html=True
+                                    )
+                                with colC:
+                                    n1_email = st.text_input("N+1 Email", key=f"{prefix}_n1email")
+                                with colD:
+                                    if st.button("🚀 To N+1", key=f"{prefix}_n1btn"):
+                                        update_escalation_status(row['id'], row.get("status", "Open"),
+                                                                 row.get("action_taken", ""),
+                                                                 row.get("owner", ""),
+                                                                 n1_email)
+                                        send_alert("Case escalated to N+1.", via="email", recipient=n1_email)
+                                        send_alert("Case escalated to N+1.", via="teams")
+
+                            # Metadata
+                            row1_col1, row1_col2, row1_col3 = st.columns(3)
+                            with row1_col1:
+                                st.markdown("**📛 Severity**")
+                                st.markdown(
+                                    f"<div style='background-color:{header_color};padding:6px;border-radius:5px;color:white;text-align:center'>{severity.capitalize()}</div>",
+                                    unsafe_allow_html=True
+                                )
+                            with row1_col2:
+                                st.markdown("**⚡ Urgency**")
+                                st.markdown(
+                                    f"<div style='background-color:{urgency_color};padding:6px;border-radius:5px;color:white;text-align:center'>{urgency.capitalize()}</div>",
+                                    unsafe_allow_html=True
+                                )
+                            with row1_col3:
+                                st.markdown("**🎯 Criticality**")
+                                st.markdown(
+                                    f"<div style='background-color:#8e44ad;padding:6px;border-radius:5px;color:white;text-align:center'>{criticality}</div>",
+                                    unsafe_allow_html=True
+                                )
+
+                            row2_col1, row2_col2, row2_col3 = st.columns(3)
+                            with row2_col1:
+                                st.markdown("**📂 Category**")
+                                st.markdown(
+                                    f"<div style='background-color:#16a085;padding:6px;border-radius:5px;color:white;text-align:center'>{category}</div>",
+                                    unsafe_allow_html=True
+                                )
+                            with row2_col2:
+                                st.markdown("**💬 Sentiment**")
+                                st.markdown(
+                                    f"<div style='background-color:{sentiment_color};padding:6px;border-radius:5px;color:white;text-align:center'>{sentiment}</div>",
+                                    unsafe_allow_html=True
+                                )
+                            with row2_col3:
+                                st.markdown("**📈 Likely to Escalate**")
+                                st.markdown(
+                                    f"<div style='background-color:{escalated_color};padding:6px;border-radius:5px;color:white;text-align:center'>{likely_to_escalate}</div>",
+                                    unsafe_allow_html=True
+                                )
+
+
+                            # Editable
+                            edit_row1_col1, edit_row1_col2 = st.columns(2)
+                            with edit_row1_col1:
+                                current_status = row.get("status", "Open").strip().title()
+                                new_status = st.selectbox(
+                                    "Update Status", ["Open", "In Progress", "Resolved"],
+                                    index=["Open", "In Progress", "Resolved"].index(current_status) if current_status in ["Open", "In Progress", "Resolved"] else 0,
+                                    key=f"{prefix}_status"
+                                )
+                            with edit_row1_col2:
+                                new_action = st.text_input("Action Taken", row.get("action_taken", ""), key=f"{prefix}_action")
+
+                            edit_row2_col1, edit_row2_col2 = st.columns(2)
+                            with edit_row2_col1:
+                                new_owner = st.text_input("Owner", row.get("owner", ""), key=f"{prefix}_owner")
+                            with edit_row2_col2:
+                                new_owner_email = st.text_input("Owner Email", row.get("owner_email", ""), key=f"{prefix}_email")
+
+                            if st.button("💾 Save Changes", key=f"{prefix}_save"):
+                                update_escalation_status(row['id'], new_status, new_action, new_owner, new_owner_email)
+                                st.success("Escalation updated.")
+                                notification_message = f"""
+🔔 Hello {new_owner},
+The escalation case #{row['id']} assigned to you has been updated:
+• Status: {new_status}
+• Action Taken: {new_action}
+• Category: {category}
+• Severity: {severity.capitalize()}
+• Urgency: {urgency.capitalize()}
+• Sentiment: {sentiment}
+Please review the updates on the EscalateAI dashboard.
+                                """.strip()
+                                if new_owner_email:
+                                    send_alert(notification_message, via="email", recipient=new_owner_email)
+                                send_alert(notification_message, via="teams")
+                    except Exception as e:
+                        st.error(f"Error rendering case #{row.get('id', 'Unknown')}: {e}")
+
+    # --- Escalated issues tab ---
+    with tabs[1]:
+        st.subheader("🚩 Escalated Issues")
+        df_esc = filtered_df[filtered_df["escalated"].str.lower() == "yes"] if not filtered_df.empty else filtered_df
+        st.dataframe(df_esc)
+
+    # --- Feedback & Retraining tab ---
+    with tabs[2]:
+        st.subheader("🔁 Feedback & Retraining")
+        df_fb = fetch_escalations()
+        if not df_fb.empty:
+            df_fb = df_fb[df_fb["likely_to_escalate"].notnull()]
+            for _, row in df_fb.iterrows():
+                with st.expander(f"🆔 {row['id']}"):
+                    fb = st.selectbox("Escalation Accuracy", ["Correct", "Incorrect"], key=f"fb_{row['id']}")
+                    sent = st.selectbox("Sentiment", ["positive", "neutral", "negative"], key=f"sent_{row['id']}")
+                    crit = st.selectbox("Criticality", ["Low", "Medium", "High", "Urgent"], key=f"crit_{row['id']}")
+                    notes = st.text_area("Notes", key=f"note_{row['id']}")
+                    if st.button("Submit", key=f"btn_{row['id']}"):
+                        owner_email = row.get("owner_email", EMAIL_USER)
+                        update_escalation_status(row['id'], row.get("status", "Open"),
+                                                 row.get("action_taken", ""), row.get("owner", ""),
+                                                 owner_email, notes=notes, sentiment=sent, criticality=crit)
+                        if owner_email:
+                            send_alert("Feedback recorded on your case.", via="email", recipient=owner_email)
+                        st.success("Feedback saved.")
+        if st.button("🔁 Retrain Model"):
+            st.info("Retraining model with feedback...")
+            model = train_model()
+            if model:
+                st.success("Model retrained successfully.")
+                try:
+                    show_feature_importance(model)
+                except Exception:
+                    pass
+            else:
+                st.warning("Not enough data to retrain model.")
+
+    # --- Analytics tab (lightweight placeholder; full analytics in '📈 Analytics' page) ---
+    with tabs[3]:
+        st.subheader("📊 Escalation Analytics (Quick View)")
+        try:
+            render_analytics()
+        except Exception as e:
+            st.info("Analytics module not fully configured.")
+            st.exception(e)
+
+    # --------------------------
+    # Background Threads (once)
+    # --------------------------
+    if 'email_thread' not in st.session_state:
+        email_thread = threading.Thread(target=email_polling_job, daemon=True)
+        email_thread.start()
+        st.session_state['email_thread'] = email_thread
+
+    # --------------------------
+    # Daily Email Scheduler
+    # --------------------------
+    def send_daily_escalation_email():
+        df = fetch_escalations()
+        df_esc = df[df["likely_to_escalate"].str.lower() == "yes"] if not df.empty else df
+        if df_esc.empty:
+            return
+        file_path = "daily_escalated_cases.xlsx"
+        df_esc.to_excel(file_path, index=False)
+        summary = f"""
+🔔 Daily Escalation Summary – {datetime.datetime.now().strftime('%Y-%m-%d')}
+Total Likely to Escalate Cases: {len(df_esc)}
+Open: {df_esc[df_esc['status'].str.strip().str.title() == 'Open'].shape[0]}
+In Progress: {df_esc[df_esc['status'].str.strip().str.title() == 'In Progress'].shape[0]}
+Resolved: {df_esc[df_esc['status'].str.strip().str.title() == 'Resolved'].shape[0]}
+Please find the attached Excel file for full details.
+""".strip()
+        try:
+            msg = MIMEMultipart()
+            msg['Subject'] = "📊 Daily Escalated Cases Report"
+            msg['From'] = EMAIL_USER
+            msg['To'] = ALERT_RECIPIENT
+            msg.attach(MIMEText(summary, 'plain'))
+            with open(file_path, "rb") as f:
+                part = MIMEBase('application', 'octet-stream')
+                part.set_payload(f.read())
+                encoders.encode_base64(part)
+                part.add_header('Content-Disposition', f'attachment; filename="{file_path}"')
+                msg.attach(part)
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+                server.starttls()
+                if EMAIL_USER and EMAIL_PASS:
+                    server.login(EMAIL_USER, EMAIL_PASS)
+                server.send_message(msg)
+        except Exception as e:
+            print(f"❌ Failed to send daily email: {e}")
+
+    import schedule
+    import time as time_module
+    def schedule_daily_email():
+        schedule.every().day.at("09:00").do(send_daily_escalation_email)
+        def run_scheduler():
+            while True:
+                schedule.run_pending()
+                time_module.sleep(60)
+        thread = threading.Thread(target=run_scheduler, daemon=True)
+        thread.start()
+
+    if 'daily_email_thread' not in st.session_state:
+        schedule_daily_email()
+        st.session_state['daily_email_thread'] = True
+
+    # --------------------------
+    # Sidebar Extras / Dev
+    # --------------------------
+    st.sidebar.markdown("### 📧 Daily Escalation Email")
+    if st.sidebar.button("Send Daily Email"):
+        send_daily_escalation_email()
+        st.sidebar.success("✅ Daily escalation email sent.")
+
+    if st.sidebar.checkbox("🧪 View Raw Database"):
+        st.sidebar.dataframe(fetch_escalations())
+
+    if st.sidebar.button("🗑️ Reset Database (Dev Only)"):
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS escalations")
+        conn.commit()
+        conn.close()
+        st.sidebar.warning("Database reset. Please restart the app.")
+
+    # --------------------------
+    # Dark Mode / Summaries / PDF
+    # --------------------------
+    if st.sidebar.checkbox("🌙 Dark Mode"):
+        apply_dark_mode()
+
+    st.sidebar.subheader("🧠 AI Assistant Summary")
+    st.sidebar.write(summarize_escalations())
+
+    st.sidebar.markdown("### 🔍 Filters (Sticky)")
+    show_filter_summary(status_opt, severity_opt, sentiment_opt, category_opt)
+
+    if st.sidebar.button("📄 Generate PDF Report"):
+        try:
+            generate_pdf_report()
+            st.sidebar.success("PDF report generated as report.pdf")
+        except Exception as e:
+            st.sidebar.error(f"PDF generation failed: {e}")
+
+    elif page == "🔥 SLA Heatmap":
+        st.subheader("🔥 SLA Heatmap")
+        try:
+            render_sla_heatmap()
+        except Exception as e:
+            st.error(f"❌ SLA Heatmap failed to render: {type(e).__name__}: {str(e)}")
+    
+    elif page == "🧠 Enhancements":
+        try:
+            from enhancement_dashboard import show_enhancement_dashboard
+            show_enhancement_dashboard()
+        except Exception as e:
+            st.info("Enhancement dashboard not available.")
+            st.exception(e)
+    
+    elif page == "📈 Analytics":
+        try:
+            show_analytics_view()
+        except Exception as e:
+            st.error("❌ Failed to load analytics view.")
+            st.exception(e)
+    
+    
+    elif page == "⚙️ Admin Tools":
+        try:
+            show_admin_panel()
+        except Exception as e:
+            st.info("Admin tools not available.")
+            st.exception(e)
