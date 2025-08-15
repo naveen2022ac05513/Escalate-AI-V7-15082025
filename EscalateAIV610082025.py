@@ -729,8 +729,8 @@ for status_name, col in status_columns.items():
     # --------------------------
     # Sidebar: Filters
     # --------------------------
-    st.sidebar.markdown("### 🔍 Escalation Filters")
-    view = st.sidebar.radio("Escalation View", ["All", "Likely to Escalate", "Not Likely"])
+    #st.sidebar.markdown("### 🔍 Escalation Filters")
+    #view = st.sidebar.radio("Escalation View", ["All", "Likely to Escalate", "Not Likely"])
 
     df_all = fetch_escalations()
     df_all['timestamp'] = pd.to_datetime(df_all['timestamp'], errors='coerce')
