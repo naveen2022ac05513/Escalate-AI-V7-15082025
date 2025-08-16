@@ -969,4 +969,3 @@ def schedule_daily_email():
 
 if 'daily_email_thread' not in st.session_state:
     schedule_daily_email(); st.session_state['daily_email_thread']=True
-```
