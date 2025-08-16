@@ -41,22 +41,22 @@ _ALIAS_BU = {"HD": "H&D", "H&D": "H&D"}
 # BU keyword rules (ordered, most specific first)
 _BU_RULES = [
     # Secure Power
-    ("SP",   r"\b(apc|smart[-\s]?ups|easy\s*ups|symmetra|galaxy\b|netshelter|netbotz|LIB|cooling|uniflair|Condensor|gvx|compressor\battery|Upss|chiller|pump|compressor|"
+    ("SPIBS",   r"\b(apc|smart[-\s]?ups|easy\s*ups|symmetra|galaxy\b|netshelter|netbotz|LIB|cooling|uniflair|Condensor|gvx|compressor\battery|Upss|chiller|pump|compressor|"
              r"rpdus?|rack\s*pdu|uniflair|inrow|micro\s*data\s*center|ecostruxure\s*it)\b"),
     # Building Management
     ("BMS",  r"\b(bms\b|building\s*management\s*system|ecostruxure\s*building\s*(operation|expert)|"
              r"spacelogic|smartx|tac\s*(vista)?|continuum|room\s*controller|"
              r"(hvac|lighting|access)\s*control|smart\s*building)\b"),
     # Industrial Automation
-    ("IA",   r"\b(modicon|m221|m241|m251|m262|m340|m580|quantum|premium|"
+    ("IDIBS",   r"\b(modicon|m221|m241|m251|m262|m340|m580|quantum|premium|"
              r"altivar|atv\d+|lexium|pacdrive|harmony|magelis|"
              r"(plc|pac|scada|dcs)\b|triconex|foxboro|safety\s*instrumented\s*system|iiot)\b"),
     # Medium Voltage / Grid
-    ("PS",   r"\b(medium[\s-]?voltage|mv\b|airset|rm6|sm6|premset|pix\b|gis|hwx|hvx|vmx|transformer|trihal|easypact|micom|easergy|vamp|sensor|relay"
+    ("PSIBS",   r"\b(medium[\s-]?voltage|mv\b|airset|rm6|sm6|premset|pix\b|gis|hwx|hvx|vmx|transformer|trihal|easypact|micom|easergy|vamp|sensor|relay"
              r"easergy(\s*p[35])?|t300\b|ring\s*main\s*unit|rmu[s]?|"
              r"(adms|derms)\b|substation\s*automation|grid\s*(monitoring|control|automation))\b"),
     # Low Voltage / Power Products
-    ("PP",   r"\b(low[\s-]?voltage|lv\b|power\s*products?|compact\s*nsx[m]?|"
+    ("PPIBS",   r"\b(low[\s-]?voltage|lv\b|power\s*products?|compact\s*nsx[m]?|"
              r"masterpact(\s*mtz)?|acti9|prisma(?:set)?|canalis|"
              r"tesys|zelio|powerlogic|ion\s*\d+|accusine|pm\d{3,4}|"
              r"panelboard|switchboard|capacitor\s*bank|power\s*factor)\b"),
