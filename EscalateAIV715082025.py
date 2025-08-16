@@ -478,6 +478,19 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Drop this right AFTER your existing <style> to remove the thin/empty bar under the issue
+st.markdown("""
+<style>
+  /* Hide any custom or default horizontal rules inside the expander */
+  .soft-hr{display:none !important; height:0 !important; border:0 !important; margin:0 !important; padding:0 !important;}
+  details[data-testid="stExpander"] hr{display:none !important;}
+
+  /* Ensure KPI panel sits flush under the issue (no top gap that can look like a bar) */
+  .kpi-panel{ margin-top:0 !important; }
+</style>
+""", unsafe_allow_html=True)
+
+
 # Sidebar navigation
 st.sidebar.title("🔍 Navigation")
 page = st.sidebar.radio("Go to", ["📊 Main Dashboard","📈 Advanced Analytics","🔥 SLA Heatmap","🧠 Enhancements","⚙️ Admin Tools"])
