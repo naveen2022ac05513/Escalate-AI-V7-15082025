@@ -1,4 +1,4 @@
-# EscalateAI_v7.py — FULL UPDATED MAIN APP
+# EscalateAI_v7.py — FULL UPDATED MAIN APP (with BU & Region Trends tab)
 # --------------------------------------------------------------------
 # EscalateAI — Customer Escalation Prediction & Management Tool
 # --------------------------------------------------------------------
@@ -8,6 +8,7 @@
 # • Normalizes legacy BU codes (SP/PP/PS/IA → SPIBS/PPIBS/PSIBS/IDIBS) at load & filter
 # • BU & Region filters on Main Dashboard (not inside expander)
 # • “Total” pill before SLA-breach pill
+# • NEW TAB: 📈 BU & Region Trends — insights & time-series by BU/Region
 # • Dev options in sidebar: Safe Rerun, View DB, Send daily email, Reset DB, Clear de-dup caches
 # • De-dup caches cleared properly on reset (no false duplicate detection after reset)
 # • Clean, compact expanders; KPI rows spaced; uniform labels; controls layout rows
@@ -16,7 +17,7 @@
 
 import os, re, time, datetime, threading, hashlib, sqlite3, smtplib, requests, imaplib, email, traceback
 from email.header import decode_header
-from email.mime.text import MIMEText
+from email.mime_text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
@@ -74,7 +75,7 @@ except Exception:
     def load_custom_plugins(): pass
     def send_whatsapp_message(*a, **k): return False
 
-# ---------------- Quick analytics view ----------------
+# ---------------- Quick analytics views ----------------
 def show_analytics_view():
     df = fetch_escalations()
     st.title("📊 Escalation Analytics")
@@ -91,6 +92,97 @@ def show_analytics_view():
     df['age_days'] = (pd.Timestamp.now() - df['timestamp']).dt.days
     df['age_bucket'] = pd.cut(df['age_days'], bins=[0,3,7,14,30,90], labels=["0–3d","4–7d","8–14d","15–30d","31–90d"])
     st.bar_chart(df['age_bucket'].value_counts().sort_index())
+
+def show_bu_region_trends():
+    """New insights tab for BU & Region."""
+    df = fetch_escalations()
+    st.title("📈 BU & Region Trends")
+    if df.empty:
+        st.warning("No data yet."); return
+
+    # Coerce timestamp and canonicalize BU
+    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+    df['date'] = df['timestamp'].dt.date
+    df['bu_code'] = df.get('bu_code', pd.Series(dtype=str)).astype(str).map(normalize_bu_code)
+    df['region']  = df.get('region', pd.Series(dtype=str)).astype(str)
+
+    # Top-line KPIs
+    total = len(df)
+    top_bu = df['bu_code'].value_counts().head(1)
+    top_rg = df['region'].value_counts().head(1)
+    c1, c2, c3 = st.columns(3)
+    with c1: st.metric("Total Cases", f"{total:,}")
+    with c2: st.metric("Top BU", f"{top_bu.index[0] if not top_bu.empty else '—'}", delta=int(top_bu.iloc[0]) if not top_bu.empty else 0)
+    with c3: st.metric("Top Region", f"{top_rg.index[0] if not top_rg.empty else '—'}", delta=int(top_rg.iloc[0]) if not top_rg.empty else 0)
+
+    st.markdown("---")
+
+    # BU mix & Region mix (all time)
+    c4, c5 = st.columns(2)
+    with c4:
+        st.subheader("BU Mix (All Time)")
+        st.bar_chart(df['bu_code'].value_counts())
+    with c5:
+        st.subheader("Region Mix (All Time)")
+        st.bar_chart(df['region'].value_counts())
+
+    st.markdown("---")
+
+    # Trend: Daily by BU
+    st.subheader("Daily Escalations by BU")
+    try:
+        ts_bu = df.groupby(['date','bu_code']).size().reset_index(name='count')
+        pivot_bu = ts_bu.pivot(index='date', columns='bu_code', values='count').fillna(0).sort_index()
+        st.line_chart(pivot_bu)
+    except Exception as e:
+        st.info(f"Trend (BU) not available: {e}")
+
+    # Trend: Daily by Region
+    st.subheader("Daily Escalations by Region")
+    try:
+        ts_rg = df.groupby(['date','region']).size().reset_index(name='count')
+        pivot_rg = ts_rg.pivot(index='date', columns='region', values='count').fillna(0).sort_index()
+        st.area_chart(pivot_rg)
+    except Exception as e:
+        st.info(f"Trend (Region) not available: {e}")
+
+    st.markdown("---")
+
+    # BU × Region matrix
+    st.subheader("BU × Region Matrix")
+    try:
+        mat = df.pivot_table(index='bu_code', columns='region', values='id', aggfunc='count', fill_value=0)
+        st.dataframe(mat, use_container_width=True)
+    except Exception as e:
+        st.info(f"Matrix not available: {e}")
+
+    # Momentum: last 14 days vs previous 14
+    st.markdown("#### Momentum (Last 14 days vs Prior 14)")
+    try:
+        cutoff2 = pd.Timestamp.now().date() - pd.Timedelta(days=28)
+        dfx = df[df['date'] >= cutoff2]
+        if not dfx.empty:
+            end = pd.Timestamp.now().date()
+            mid = end - pd.Timedelta(days=14)
+            recent = dfx[(dfx['date'] > mid)]
+            prior  = dfx[(dfx['date'] <= mid)]
+            bu_recent = recent['bu_code'].value_counts()
+            bu_prior  = prior['bu_code'].value_counts()
+            bu_delta  = (bu_recent - bu_prior).fillna(0).astype(int).sort_values(ascending=False)
+            rg_recent = recent['region'].value_counts()
+            rg_prior  = prior['region'].value_counts()
+            rg_delta  = (rg_recent - rg_prior).fillna(0).astype(int).sort_values(ascending=False)
+            c6, c7 = st.columns(2)
+            with c6:
+                st.markdown("**BU Δ (last 14d vs prev 14d)**")
+                st.dataframe(bu_delta.rename("Δ").to_frame())
+            with c7:
+                st.markdown("**Region Δ (last 14d vs prev 14d)**")
+                st.dataframe(rg_delta.rename("Δ").to_frame())
+        else:
+            st.info("Not enough recent data for momentum.")
+    except Exception as e:
+        st.info(f"Momentum not available: {e}")
 
 # ---------------- Configuration ----------------
 load_dotenv()
@@ -717,7 +809,6 @@ if st.sidebar.button("🔁 Safe Rerun"):
     st.rerun()
 
 if st.sidebar.button("📧 Send Daily Email"):
-    # defined later; call via a no-op safe wrapper if not defined yet
     try:
         send_daily_escalation_email()
         st.sidebar.success("✅ Daily escalation email sent.")
@@ -773,7 +864,15 @@ if page == "📊 Main Dashboard":
         # force canonical BU code
         df_all['bu_code'] = df_all['bu_code'].astype(str).map(normalize_bu_code)
 
-    tabs = st.tabs(["🗃️ All","🚩 Likely to Escalate","🔁 Feedback & Retraining","📊 Summary Analytics","ℹ️ How this Dashboard Works"])
+    # ADDITION: new tab 📈 BU & Region Trends
+    tabs = st.tabs([
+        "🗃️ All",
+        "🚩 Likely to Escalate",
+        "🔁 Feedback & Retraining",
+        "📊 Summary Analytics",
+        "📈 BU & Region Trends",
+        "ℹ️ How this Dashboard Works"
+    ])
 
     # ---------------- Tab 0: All ----------------
     with tabs[0]:
@@ -784,7 +883,7 @@ if page == "📊 Main Dashboard":
         with top_l:
             view_radio = st.radio("Escalation View", ["All", "Likely to Escalate", "Not Likely", "SLA Breach"], horizontal=True)
         with top_m:
-            # Total (after sidebar filters later)
+            # Total (after filters later) + SLA pill placeholders
             st.markdown(f"<span class='total-pill' id='total-pill'>Total: 0</span><span class='sla-pill' id='sla-pill'>⏱️ 0 SLA breach(s)</span>", unsafe_allow_html=True)
         with top_r:
             try: ai_text = summarize_escalations()
@@ -810,14 +909,8 @@ if page == "📊 Main Dashboard":
         # Apply sidebar filters first
         filt = df_all.copy()
         if not filt.empty:
-            if 'status' in filt.columns and 'severity' in filt.columns and 'sentiment' in filt.columns and 'category' in filt.columns:
-                if st.session_state.get("status_opt") is None:
-                    # Sidebar filter values (read without creating duplicates)
-                    pass
-            # Apply sidebar filters (grab current selections from sidebar widgets we created earlier)
-            # We just read them again for safety; if not present, skip
             try:
-                status_opt    = st.session_state.get('status', None) or st.sidebar.session_state.get('Status', "All")
+                status_opt    = st.sidebar.session_state.get('Status', "All")
                 severity_opt  = st.sidebar.session_state.get('Severity', "All")
                 sentiment_opt = st.sidebar.session_state.get('Sentiment', "All")
                 category_opt  = st.sidebar.session_state.get('Category', "All")
@@ -849,7 +942,6 @@ if page == "📊 Main Dashboard":
                           & (st_prio=='high')
                           & ((datetime.datetime.now()-_x['timestamp']) > datetime.timedelta(minutes=10))]
             total_count = len(_x)
-            # Patch the pills (HTML already rendered above)
             st.markdown(f"""
                 <script>
                   const totalEl = window.parent.document.querySelector('#total-pill');
@@ -972,7 +1064,6 @@ if page == "📊 Main Dashboard":
                             # Row A: Status (select) | Action Taken
                             ra1, ra2 = st.columns([1.0, 2.2])
                             with ra1:
-                                current_status = (row.get("status") or "Open").strip().str.title() if isinstance(row.get("status"), str) else "Open"
                                 current_status = (row.get("status") or "Open").strip().title()
                                 new_status = st.selectbox(
                                     "Status",
@@ -1065,8 +1156,12 @@ if page == "📊 Main Dashboard":
         try: render_analytics()
         except Exception as e: st.info("Analytics module not fully configured."); st.exception(e)
 
-    # ---------------- Tab 4: Help ----------------
+    # ---------------- Tab 4: BU & Region Trends (NEW) ----------------
     with tabs[4]:
+        show_bu_region_trends()
+
+    # ---------------- Tab 5: Help ----------------
+    with tabs[5]:
         st.subheader("ℹ️ How this Dashboard Works")
         st.markdown("""
 - **Kanban:** Open (🟧), In Progress (🔵), Resolved (🟩)
@@ -1080,7 +1175,8 @@ if page == "📊 Main Dashboard":
     - Row C: **Save** (left) + **N+1 Email** + **Escalate to N+1**
 - **Escalation View** includes **SLA Breach** (unresolved high-priority > 10 minutes).
 - **De-dup:** Content hashing + cosine/sequence similarity; caches persist unless cleared.
-- **Email ingestion** & **Excel ingestion** enrich entries with BU/Region (if Country/State/City provided).
+- **Email/Excel ingestion** enrich entries with BU/Region (if Country/State/City provided).
+- **NEW:** **📈 BU & Region Trends** tab shows BU mix, Region mix, time-series by BU/Region, BU×Region matrix, and momentum.
         """)
 
 elif page == "🔥 SLA Heatmap":
