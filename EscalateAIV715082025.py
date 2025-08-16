@@ -4,10 +4,9 @@
 # --------------------------------------------------------------------
 # Key updates in this build:
 # • Header row: Escalation View + SLA capsule + AI Summary on one line
-# • Below header: Total (filtered) pill on left + compact Search on right
-# • Sidebar: MS Teams & Email composer restored; WhatsApp & SMS allowed
-#   only for Resolved cases
-# • Feedback & Retraining: 3 cases per page, 3-column grid with paging
+# • Below header: Total (filtered) pill on left + **Search label visible**
+# • Sidebar: MS Teams & Email composer; WhatsApp & SMS allowed only for Resolved
+# • Feedback & Retraining: **6 cases per page**, 3-column grid (2 rows × 3 cols)
 # • BU/Region filters in sidebar; totals/kanban reflect applied filters
 # • BU/Region columns stored in DB; schema migration handled
 # • Charts with value labels for BU/Region
@@ -170,7 +169,6 @@ def ensure_schema():
             status_update_date TEXT, user_feedback TEXT, duplicate_of TEXT,
             bu_code TEXT, bu_name TEXT, region TEXT
         )''')
-        # ensure columns exist
         for col in ["issue_hash","duplicate_of","owner_email","status_update_date","user_feedback",
                     "likely_to_escalate","action_owner","priority","bu_code","bu_name","region"]:
             try: cur.execute(f"SELECT {col} FROM escalations LIMIT 1")
@@ -208,7 +206,6 @@ def fetch_escalations() -> pd.DataFrame:
         df = pd.DataFrame()
     finally:
         conn.close()
-    # Normalize columns
     for c in ["status","severity","urgency","sentiment","criticality","category","bu_code","region","priority"]:
         if c in df.columns:
             df[c] = df[c].astype(str)
@@ -433,7 +430,6 @@ def email_polling_job():
         for e in parse_emails():
             s,u,sev,c,cat,esc = analyze_issue(e["issue"])
             likely = predict_escalation(m,s,u,sev,c)
-            # Email has no country/state/city—use India/Others fallback
             add_or_skip_escalation(e["customer"], e["issue"], s,u,sev,c,cat,esc, likely, country="India")
         time.sleep(60)
 
@@ -474,15 +470,12 @@ st.markdown("""
 
   .controls-panel{ background:#fff; border:0; border-radius:12px; padding:10px 0 2px 0; margin:6px 0 2px 0; }
 
-  /* header row extras */
   .sla-pill{display:inline-block;padding:6px 10px;border-radius:999px;background:#ef4444;color:#fff;font-weight:700;font-size:12px;}
   .aisum{background:#0b1220;color:#e5f2ff;padding:10px 12px;border-radius:10px;
          box-shadow:0 6px 14px rgba(0,0,0,.10);font-size:13px;}
 
-  /* totals + search row */
   .counts-pill{display:inline-block;padding:6px 10px;border-radius:10px;background:#f8fafc;border:1px solid #e5e7eb;
     font-weight:600;color:#334155;font-size:13px;white-space:nowrap;}
-  .compact-caption{ margin-bottom:4px; color:#64748b; font-size:12px; }
 
   /* Inputs/labels uniform */
   div[data-testid="stTextInput"]  label,
@@ -531,7 +524,6 @@ if uploaded:
     need = [c for c in ["Customer","Issue"] if c not in df_x.columns]
     if need:
         st.sidebar.error("Missing required columns: " + ", ".join(need)); st.stop()
-    # Optional enrich via bucketizer if Country/State/City exist
     text_cols = ["Issue"]
     if _BU_OK and any(c in df_x.columns for c in ["Country","State","City"]):
         df_x = enrich_with_bu_region(df_x, text_cols=text_cols,
@@ -545,7 +537,6 @@ if uploaded:
             if not issue: continue
             text = summarize_issue_text(issue)
             s,u,sev,c,cat,esc = analyze_issue(text); likely = predict_escalation(m,s,u,sev,c)
-            # Use BU/Region from enriched df if present
             bu_code, bu_name = (r.get("bu_code","OTHER"), r.get("bu_name","Other / Unclassified"))
             region = r.get("region","Others")
             if bu_code == "" or pd.isna(bu_code): bu_code, bu_name = classify_bu(text)
@@ -582,7 +573,6 @@ severity_opt  = st.sidebar.selectbox("Severity", ["All","minor","major","critica
 sentiment_opt = st.sidebar.selectbox("Sentiment",["All","positive","neutral","negative"], index=0)
 category_opt  = st.sidebar.selectbox("Category", ["All","technical","support","dissatisfaction","safety","business","other"], index=0)
 
-# BU & Region filters
 df_for_filters = fetch_escalations()
 bu_codes = sorted([b for b in df_for_filters.get("bu_code", pd.Series(dtype=str)).dropna().unique().tolist() if b], key=str)
 if not bu_codes: bu_codes = ["PPIBS","PSIBS","IDIBS","SPIBS","BMS","H&D","A2E","Solar","OTHER"]
@@ -647,10 +637,11 @@ auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh", value=False)
 refresh_interval = st.sidebar.slider("Refresh Interval (sec)", 10, 60, 30)
 if auto_refresh: time.sleep(refresh_interval); st.rerun()
 if st.sidebar.button("🔁 Manual Refresh"): st.rerun()
+
 st.sidebar.markdown("### 📧 Daily Escalation Email")
 if st.sidebar.button("Send Daily Email"):
-    # uses function defined at bottom
-    pass  # button exists; function registered in scheduler below
+    send_daily_escalation_email()
+    st.sidebar.success("✅ Daily escalation email sent.")
 
 if st.sidebar.checkbox("🧪 View Raw Database"):
     st.sidebar.dataframe(fetch_escalations())
@@ -746,11 +737,14 @@ if page == "📊 Main Dashboard":
             total = len(dfvv); open_c = (s=="Open").sum(); ip_c = (s=="In Progress").sum(); res_c = (s=="Resolved").sum()
             return f"Total: {total}  |  Open: {open_c}  |  In Progress: {ip_c}  |  Resolved: {res_c}"
 
-        # --- Row B: compact Total left + compact Search right ---
+        # --- Row B: Total left + **Search with visible label** right ---
         rowB_l, rowB_r = st.columns([0.55, 0.45])
         with rowB_r:
-            st.markdown("<div class='compact-caption'>🔎 Search</div>", unsafe_allow_html=True)
-            q = st.text_input("Search cases", placeholder="ID, customer, issue, owner, email, status, BU, region…", key="search_cases", label_visibility="collapsed")
+            q = st.text_input(
+                "🔎 Search",
+                placeholder="ID, customer, issue, owner, email, status, BU, region…",
+                key="search_cases"
+            )
 
         # Build final view
         view = filter_df_by_query(base, q)
@@ -890,7 +884,7 @@ if page == "📊 Main Dashboard":
                 (r.get("criticality") or "medium").lower()
             ), axis=1)
             d = d[d["likely_calc"]=="Yes"]
-        q2 = st.text_input("🔎 Search likely to escalate", placeholder="Search…")
+        q2 = st.text_input("🔎 Search", placeholder="Search likely to escalate…")
         st.dataframe(filter_df_by_query(d, q2).sort_values(by="timestamp", ascending=False), use_container_width=True)
 
     # ---------------- Tab 2: Feedback ----------------
@@ -901,27 +895,28 @@ if page == "📊 Main Dashboard":
             st.info("No cases available.")
         else:
             d = d.sort_values(by="timestamp", ascending=False).reset_index(drop=True)
-            # show 3 cases per page
-            per_page = 3
+            # show **6** cases per page
+            per_page = 6
             if "fb_page" not in st.session_state: st.session_state.fb_page = 0
             total_pages = max(1, (len(d) + per_page - 1) // per_page)
 
             nav_c1, nav_c2, nav_c3 = st.columns([0.15, 0.7, 0.15])
             with nav_c1:
-                if st.button("◀️ Prev", disabled=(st.session_state.fb_page==0)):
+                if st.button("◀️ Prev", key="fb_prev", disabled=(st.session_state.fb_page==0)):
                     st.session_state.fb_page -= 1
             with nav_c2:
                 st.markdown(f"<div style='text-align:center;color:#64748b;'>Page {st.session_state.fb_page+1} of {total_pages}</div>", unsafe_allow_html=True)
             with nav_c3:
-                if st.button("Next ▶️", disabled=(st.session_state.fb_page >= total_pages-1)):
+                if st.button("Next ▶️", key="fb_next", disabled=(st.session_state.fb_page >= total_pages-1)):
                     st.session_state.fb_page += 1
 
             start = st.session_state.fb_page * per_page
             slice_df = d.iloc[start:start+per_page]
 
-            cc1, cc2, cc3 = st.columns(3)
-            cols = [cc1, cc2, cc3]
-            for (idx, r), col in zip(slice_df.iterrows(), cols):
+            # 3 columns layout; up to 6 items -> 2 rows × 3 cols
+            grid_cols = st.columns(3)
+            for i, (idx, r) in enumerate(slice_df.iterrows()):
+                col = grid_cols[i % 3]
                 with col:
                     with st.expander(f"🆔 {r['id']}", expanded=True):
                         fb   = st.selectbox("Escalation Accuracy", ["Correct","Incorrect"], key=f"fb_{r['id']}")
@@ -957,7 +952,7 @@ if page == "📊 Main Dashboard":
         st.subheader("ℹ️ How this Dashboard Works")
         st.markdown("""
 - **Header row:** Escalation View + SLA breach capsule + AI summary
-- **Totals/Search row:** **Total (filtered)** pill on the left; **compact search** on the right
+- **Totals/Search row:** **Total (filtered)** pill on the left; **Search** label above the box on the right
 - **Kanban Columns:** Open (🟧), In Progress (🔵), Resolved (🟩)
 - **Expander layout:**
   - Issue summary + age chip
