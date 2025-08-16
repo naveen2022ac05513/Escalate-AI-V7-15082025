@@ -1,15 +1,20 @@
-# EscalateAIV7.py
+# EscalateAI_v7.py
 # --------------------------------------------------------------------
 # EscalateAI — Customer Escalation Prediction & Management Tool
-# This build implements:
-# • KPI chips split into two rows (3 + 3) with extra spacing below summary
-# • Status label + dropdown + Save on the SAME row
-# • Removed the “Total Cases” pill under Search
-# • Escalation View includes “SLA Breach”
-# • Sticky header (title 1.5×), compact gaps, polished expanders (no top bar)
-# • Colors: Open 🟧 (#f59e0b), In Progress 🔵 (#3b82f6), Resolved 🟩 (#22c55e)
-# • WhatsApp + SMS, robust de-dup (hash + TF-IDF + difflib), search, SLA alerts
-# • Tabs: All | Likely | Feedback | Summary Analytics | Help
+# --------------------------------------------------------------------
+# Highlights in this build:
+# • Clean, pleasant expander:
+#     - Summary + Age chip
+#     - Soft KPI panel (two rows: Severity/ Urgency/ Criticality, then Category/ Sentiment/ Likely)
+#     - Controls panel with Status + dropdown + Save on one row
+#     - Action/Owner/Owner Email row + N+1 controls side-by-side
+# • Sticky header (title 1.5×) that does not scroll away
+# • Kanban headers centered with counts; colors: Open 🟧, In Progress 🔵, Resolved 🟩
+# • Escalation View radio includes “SLA Breach”
+# • Search bar, compact gaps, no “Total Cases” pill under Search
+# • SMS (Twilio) + WhatsApp hooks
+# • Robust duplicate detection (hash + TF-IDF/difflib)
+# • Analytics tabs, feedback & retraining, daily email, email polling
 # --------------------------------------------------------------------
 
 import os, re, time, datetime, threading, hashlib, sqlite3, smtplib, requests, imaplib, email, traceback
@@ -27,7 +32,7 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
-# Optional TF-IDF (duplicate detection)
+# Optional TF-IDF for duplicate detection
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.metrics.pairwise import cosine_similarity as _cosine
@@ -115,6 +120,7 @@ NEGATIVE_KEYWORDS = {
 processed_email_uids_lock = threading.Lock()
 global_seen_hashes = set()
 
+# Colors
 STATUS_COLORS   = {"Open":"#f59e0b","In Progress":"#3b82f6","Resolved":"#22c55e"}  # Orange / Blue / Green
 SEVERITY_COLORS = {"critical":"#ef4444","major":"#f59e0b","minor":"#10b981"}
 URGENCY_COLORS  = {"high":"#dc2626","normal":"#16a34a"}
@@ -403,7 +409,7 @@ except Exception: pass
 try: load_custom_plugins()
 except Exception: pass
 
-# Styles
+# Styles (adds the cleaner expander look)
 st.markdown("""
 <style>
   .sticky-header{position:sticky;top:0;z-index:999;background:linear-gradient(135deg,#0ea5e9 0%,#7c3aed 100%);
@@ -429,7 +435,7 @@ st.markdown("""
   .chip{display:inline-block;padding:4px 8px;border-radius:999px;background:#f3f4f6;margin-right:6px;font-size:12px;white-space:nowrap;}
   .age{padding:4px 8px;border-radius:8px;color:#fff;font-weight:600;text-align:center;font-size:12px;}
 
-  .summary{font-size:15px;color:#0f172a;margin-bottom:10px;} /* larger & spacing below */
+  .summary{font-size:15px;color:#0f172a;margin-bottom:10px;} /* bigger & spacing below */
   .kv{font-size:12px;margin:2px 0;white-space:nowrap;}
   .spacer8{height:8px;}
   .rowpad{height:6px;}
@@ -437,6 +443,19 @@ st.markdown("""
   .aisum{background:#0b1220;color:#e5f2ff;padding:10px 12px;border-radius:10px;
          box-shadow:0 6px 14px rgba(0,0,0,.10);font-size:13px;}
   .sla-pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#ef4444;color:#fff;font-weight:600;font-size:12px;}
+
+  /* NEW: Clean panels and outlined chips */
+  .kpi-panel{
+    background:#f8fafc;border:1px solid #e5e7eb;border-radius:12px;padding:10px 12px;margin:4px 0 8px 0;
+  }
+  .controls-panel{
+    background:#ffffff;border:1px dashed #e5e7eb;border-radius:12px;padding:10px 12px;margin:6px 0 2px 0;
+  }
+  .field-label-inline{font-size:12px;font-weight:600;color:#475569;padding-top:8px;}
+  .tag-pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:600;
+            border:1px solid var(--c,#cbd5e1);color:var(--c,#334155);background:#fff;white-space:nowrap;}
+  .soft-hr{border:0;height:1px;background:linear-gradient(to right, transparent, #e5e7eb, transparent);margin:6px 0 8px 0;}
+  .btn-save > div button{width:100%;}
 </style>
 <div class="sticky-header"><h1>🚨 EscalateAI – AI Based Customer Escalation Prediction & Management Tool</h1></div>
 """, unsafe_allow_html=True)
@@ -488,7 +507,7 @@ if st.sidebar.button("Trigger SLA Check"):
             send_alert(msg, via="teams"); send_alert(msg, via="email"); st.sidebar.success("✅ Alerts sent")
         else: st.sidebar.info("All SLAs healthy")
 
-# Sidebar: static filters (these are still available; main view has the radio)
+# Sidebar: static filters (still available; main view has view radio)
 st.sidebar.markdown("### 🔍 Escalation Filters")
 status_opt    = st.sidebar.selectbox("Status",   ["All","Open","In Progress","Resolved"], index=0)
 severity_opt  = st.sidebar.selectbox("Severity", ["All","minor","major","critical"], index=0)
@@ -563,7 +582,7 @@ if page == "📊 Main Dashboard":
     with tabs[0]:
         st.subheader("📊 Escalation Kanban Board — All Cases")
 
-        # Escalation View (includes SLA Breach) + AI summary (kept near top)
+        # Escalation View (includes SLA Breach) + AI summary
         top_l, top_m, top_r = st.columns([0.5, 0.2, 0.3])
         with top_l:
             view_radio = st.radio("Escalation View", ["All", "Likely to Escalate", "Not Likely", "SLA Breach"], horizontal=True)
@@ -657,42 +676,45 @@ if page == "📊 Main Dashboard":
                         except Exception:
                             age_str, age_col = "N/A", "#6b7280"
 
-                        # Expander (no wrapper)
+                        # Clean expander
                         with st.expander(f"🆔 {case_id} — {customer} {flag}", expanded=False):
+                            # Summary + Age
                             r0a, r0b = st.columns([0.75, 0.25])
                             with r0a:
                                 st.markdown(f"<div class='summary'>{summary}</div>", unsafe_allow_html=True)
                             with r0b:
                                 st.markdown(f"<div style='text-align:right;'><span class='age' style='background:{age_col};'>Age: {age_str}</span></div>", unsafe_allow_html=True)
 
-                            # Small gap below summary
-                            st.markdown("<div class='spacer8'></div>", unsafe_allow_html=True)
-
-                            # KPI Row A: Severity | Urgency | Criticality
+                            # --- KPI PANEL (two rows) ---
+                            st.markdown("<div class='kpi-panel'>", unsafe_allow_html=True)
                             ka1, ka2, ka3 = st.columns(3)
                             with ka1:
-                                st.markdown(f"<div class='kv'>📛 <b>Severity:</b> <span class='badge' style='background:{sev_color};'>{sv.capitalize()}</span></div>", unsafe_allow_html=True)
+                                st.markdown(f"<div class='kv'>📛 <span class='field'>Severity</span> <span class='tag-pill' style='--c:{sev_color}; border-color:{sev_color}; color:{sev_color};'>{sv.capitalize()}</span></div>", unsafe_allow_html=True)
                             with ka2:
-                                st.markdown(f"<div class='kv'>⚡ <b>Urgency:</b> <span class='badge' style='background:{urg_color};'>{'High' if u=='high' else 'Normal'}</span></div>", unsafe_allow_html=True)
+                                st.markdown(f"<div class='kv'>⚡ <span class='field'>Urgency</span> <span class='tag-pill' style='--c:{urg_color}; border-color:{urg_color}; color:{urg_color};'>{'High' if u=='high' else 'Normal'}</span></div>", unsafe_allow_html=True)
                             with ka3:
-                                st.markdown(f"<div class='kv'>🎯 <b>Criticality:</b> <span class='badge' style='background:#8b5cf6;'>{cr.capitalize()}</span></div>", unsafe_allow_html=True)
+                                st.markdown(f"<div class='kv'>🎯 <span class='field'>Criticality</span> <span class='tag-pill' style='--c:#8b5cf6; border-color:#8b5cf6; color:#8b5cf6;'>{cr.capitalize()}</span></div>", unsafe_allow_html=True)
 
                             st.markdown("<div class='rowpad'></div>", unsafe_allow_html=True)
 
-                            # KPI Row B: Category | Sentiment | Likely
                             kb1, kb2, kb3 = st.columns(3)
                             with kb1:
-                                st.markdown(f"<div class='kv'>📂 <b>Category:</b> <span class='chip'>{(row.get('category') or 'other').capitalize()}</span></div>", unsafe_allow_html=True)
+                                st.markdown(f"<div class='kv'>📂 <span class='field'>Category</span> <span class='tag-pill'>{(row.get('category') or 'other').capitalize()}</span></div>", unsafe_allow_html=True)
                             with kb2:
-                                st.markdown(f"<div class='kv'>💬 <b>Sentiment:</b> <span class='badge' style='background:{sent_color};'>{s.capitalize()}</span></div>", unsafe_allow_html=True)
+                                st.markdown(f"<div class='kv'>💬 <span class='field'>Sentiment</span> <span class='tag-pill' style='--c:{sent_color}; border-color:{sent_color}; color:{sent_color};'>{s.capitalize()}</span></div>", unsafe_allow_html=True)
                             with kb3:
-                                st.markdown(f"<div class='kv'>📈 <b>Likely:</b> <span class='badge' style='background:{esc_color};'>{likely}</span></div>", unsafe_allow_html=True)
+                                st.markdown(f"<div class='kv'>📈 <span class='field'>Likely</span> <span class='tag-pill' style='--c:{esc_color}; border-color:{esc_color}; color:{esc_color};'>{likely}</span></div>", unsafe_allow_html=True)
+                            st.markdown("</div>", unsafe_allow_html=True)  # /kpi-panel
 
-                            # Status label + dropdown + Save in one row
+                            # Divider then controls panel
+                            st.markdown("<hr class='soft-hr' />", unsafe_allow_html=True)
+                            st.markdown("<div class='controls-panel'>", unsafe_allow_html=True)
+
+                            # Status + dropdown + Save in one row
                             prefix = f"case_{case_id}"
-                            status_lbl, status_dd, status_save = st.columns([0.5, 1.4, 0.8])
+                            status_lbl, status_dd, status_save = st.columns([0.35, 1.4, 0.7])
                             with status_lbl:
-                                st.markdown("<div class='kv'><b>Status</b></div>", unsafe_allow_html=True)
+                                st.markdown("<div class='field-label-inline'>Status</div>", unsafe_allow_html=True)
                             with status_dd:
                                 cur = (row.get("status") or "Open").strip().title()
                                 new_status = st.selectbox(
@@ -701,12 +723,15 @@ if page == "📊 Main Dashboard":
                                     key=f"{prefix}_status", label_visibility="collapsed"
                                 )
                             with status_save:
-                                if st.button("💾 Save", key=f"{prefix}_save"):
-                                    update_escalation_status(case_id, new_status, row.get("action_taken",""), row.get("owner",""), row.get("owner_email",""))
-                                    st.success("✅ Saved")
+                                save_container = st.container()
+                                with save_container:
+                                    if st.button("💾 Save", key=f"{prefix}_save"):
+                                        update_escalation_status(case_id, new_status, row.get("action_taken",""), row.get("owner",""), row.get("owner_email",""))
+                                        st.success("✅ Saved")
+                                st.markdown("<div class='btn-save'></div>", unsafe_allow_html=True)
 
                             # Action / Owner / Owner Email
-                            e1, e2, e3 = st.columns([1.8, 1.2, 1.5])
+                            e1, e2, e3 = st.columns([1.8, 1.2, 1.6])
                             with e1: act  = st.text_input("Action Taken", row.get("action_taken",""), key=f"{prefix}_action")
                             with e2: own  = st.text_input("Owner", row.get("owner",""), key=f"{prefix}_owner")
                             with e3: mail = st.text_input("Owner Email", row.get("owner_email",""), key=f"{prefix}_email")
@@ -719,6 +744,8 @@ if page == "📊 Main Dashboard":
                                     update_escalation_status(case_id, row.get("status","Open"), act or row.get("action_taken",""), own or row.get("owner",""), n1_email)
                                     if n1_email: send_alert(f"Case {case_id} escalated to N+1.", via="email", recipient=n1_email)
                                     send_alert(f"Case {case_id} escalated to N+1.", via="teams")
+
+                            st.markdown("</div>", unsafe_allow_html=True)  # /controls-panel
                     except Exception as e:
                         st.error(f"Error rendering case #{row.get('id','Unknown')}: {e}")
 
@@ -777,9 +804,9 @@ if page == "📊 Main Dashboard":
         st.subheader("ℹ️ How this Dashboard Works")
         st.markdown("""
 - **Kanban:** Open (🟧), In Progress (🔵), Resolved (🟩)
-- **Expander (click SESICE ID):** summary (larger), **Age** chip, **two KPI rows** (Severity, Urgency, Criticality, Category, Sentiment, Likely)
-- **Status + Save** inline, then Action/Owner/Email, and **N+1 Email + Escalate**.
-- **Escalation View** includes **SLA Breach** to filter unresolved high-priority items over 10 minutes.
+- **Expander:** summary (larger), Age chip, soft **KPI panel** in two rows (Severity, Urgency, Criticality, Category, Sentiment, Likely)
+- **Controls:** Status + Save (same row), then Action/Owner/Owner Email, and **N+1 Email + Escalate**.
+- **Escalation View** includes **SLA Breach** (unresolved high-priority > 10 minutes).
 - **Likely to Escalate** uses the model (falls back to simple rules until enough data).
         """)
 
