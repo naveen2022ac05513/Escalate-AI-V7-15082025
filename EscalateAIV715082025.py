@@ -1,10 +1,19 @@
 # EscalateAI_v7.py
 # --------------------------------------------------------------------
 # EscalateAI — Customer Escalation Prediction & Management Tool
-# (Full main app with BU/Region, layout updates, and safer guards)
+# --------------------------------------------------------------------
+# Key updates in this build:
+# • Header row: Escalation View + SLA capsule + AI Summary on one line
+# • Below header: Total (filtered) pill on left + compact Search on right
+# • Sidebar: MS Teams & Email composer restored; WhatsApp & SMS allowed
+#   only for Resolved cases
+# • Feedback & Retraining: 3 cases per page, 3-column grid with paging
+# • BU/Region filters in sidebar; totals/kanban reflect applied filters
+# • BU/Region columns stored in DB; schema migration handled
+# • Charts with value labels for BU/Region
 # --------------------------------------------------------------------
 
-import os, re, time, datetime, threading, hashlib, sqlite3, smtplib, requests, imaplib, email, traceback
+import os, re, time, datetime, threading, hashlib, sqlite3, smtplib, requests, imaplib, email, traceback, schedule
 from email.header import decode_header
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -29,25 +38,51 @@ except Exception:
     _TFIDF_AVAILABLE = False
 import difflib
 
-from dotenv import load_dotenv
-
-# ---------- BU & Region bucketizer (separate file) ----------
+# Optional BU/Region bucketizer
 try:
     from bu_region_bucketizer import (
-        classify_bu, bucketize_region, enrich_with_bu_region
+        classify_bu, enrich_with_bu_region, bucketize_region
+    )
+    _BU_OK = True
+except Exception:
+    _BU_OK = False
+    def classify_bu(text): return ("OTHER", "Other / Unclassified")
+    def enrich_with_bu_region(df, text_cols, country_col="Country", state_col="State", city_col="City"):
+        out = df.copy()
+        out["bu_code"] = "OTHER"; out["bu_name"] = "Other / Unclassified"; out["region"] = "Others"
+        return out
+    def bucketize_region(country, state=None, city=None, text_hint=None): return "Others"
+
+from dotenv import load_dotenv
+
+# ---------------- Optional modules (safe fallbacks) ----------------
+try:
+    from enhancements import (
+        render_analytics, show_feature_importance, generate_pdf_report,
+        render_sla_heatmap, apply_dark_mode, show_filter_summary,
+        get_escalation_template, summarize_escalations, schedule_weekly_retraining
     )
 except Exception:
-    # Safe fallbacks if the module isn't present
-    def classify_bu(text):
-        return ("OTHER", "Other / Unclassified")
-    def bucketize_region(country, state=None, city=None, text_hint=None):
-        return "Others"
-    def enrich_with_bu_region(df, text_cols, country_col='Country', state_col='State', city_col='City'):
-        out = df.copy()
-        out["bu_code"] = "OTHER"
-        out["bu_name"] = "Other / Unclassified"
-        out["region"]  = "Others"
-        return out
+    def render_analytics(): st.info("enhancements.render_analytics not available.")
+    def show_feature_importance(*a, **k): pass
+    def generate_pdf_report(): raise RuntimeError("enhancements.generate_pdf_report missing")
+    def render_sla_heatmap(): st.info("enhancements.render_sla_heatmap not available.")
+    def apply_dark_mode(): pass
+    def show_filter_summary(*a, **k): pass
+    def summarize_escalations(): return "Summary unavailable."
+    def schedule_weekly_retraining(): pass
+
+try:
+    from advanced_enhancements import (
+        validate_escalation_schema, log_escalation_action, load_custom_plugins,
+        send_whatsapp_message, predict_resolution_eta, show_shap_explanation,
+        generate_text_pdf, render_model_metrics, score_feedback_quality
+    )
+except Exception:
+    def validate_escalation_schema(): pass
+    def log_escalation_action(*a, **k): pass
+    def load_custom_plugins(): pass
+    def send_whatsapp_message(*a, **k): return False
 
 # ---------------- Quick analytics view ----------------
 def show_analytics_view():
@@ -66,34 +101,6 @@ def show_analytics_view():
     df['age_days'] = (pd.Timestamp.now() - df['timestamp']).dt.days
     df['age_bucket'] = pd.cut(df['age_days'], bins=[0,3,7,14,30,90], labels=["0–3d","4–7d","8–14d","15–30d","31–90d"])
     st.bar_chart(df['age_bucket'].value_counts().sort_index())
-
-# ---------------- Optional modules (safe fallbacks) ----------------
-try:
-    from enhancements import (
-        render_analytics, show_feature_importance, generate_pdf_report,
-        render_sla_heatmap, apply_dark_mode, show_filter_summary,
-        get_escalation_template, summarize_escalations, schedule_weekly_retraining
-    )
-except Exception:
-    def render_analytics(): st.info("enhancements.render_analytics not available.")
-    def show_feature_importance(*a, **k): pass
-    def generate_pdf_report(): raise RuntimeError("enhancements.generate_pdf_report missing")
-    def render_sla_heatmap(): st.info("enhancements.render_sla_heatmap not available.")
-    def apply_dark_mode(): pass
-    def show_filter_summary(*a, **k): pass
-    def summarize_escalations(): return "No enhancements summary."
-
-try:
-    from advanced_enhancements import (
-        validate_escalation_schema, log_escalation_action, load_custom_plugins,
-        send_whatsapp_message, predict_resolution_eta, show_shap_explanation,
-        generate_text_pdf, render_model_metrics, score_feedback_quality
-    )
-except Exception:
-    def validate_escalation_schema(): pass
-    def log_escalation_action(*a, **k): pass
-    def load_custom_plugins(): pass
-    def send_whatsapp_message(*a, **k): return False
 
 # ---------------- Configuration ----------------
 load_dotenv()
@@ -163,6 +170,7 @@ def ensure_schema():
             status_update_date TEXT, user_feedback TEXT, duplicate_of TEXT,
             bu_code TEXT, bu_name TEXT, region TEXT
         )''')
+        # ensure columns exist
         for col in ["issue_hash","duplicate_of","owner_email","status_update_date","user_feedback",
                     "likely_to_escalate","action_owner","priority","bu_code","bu_name","region"]:
             try: cur.execute(f"SELECT {col} FROM escalations LIMIT 1")
@@ -193,10 +201,20 @@ def _mark_processed_hash(h: str):
 def fetch_escalations() -> pd.DataFrame:
     ensure_schema()
     conn = sqlite3.connect(DB_PATH)
-    try: df = pd.read_sql("SELECT * FROM escalations", conn)
+    try:
+        df = pd.read_sql("SELECT * FROM escalations", conn)
     except Exception as e:
-        st.error(f"Error reading escalations table: {e}"); df = pd.DataFrame()
-    finally: conn.close()
+        st.error(f"Error reading escalations table: {e}")
+        df = pd.DataFrame()
+    finally:
+        conn.close()
+    # Normalize columns
+    for c in ["status","severity","urgency","sentiment","criticality","category","bu_code","region","priority"]:
+        if c in df.columns:
+            df[c] = df[c].astype(str)
+    if "bu_code" not in df.columns: df["bu_code"] = "OTHER"
+    if "bu_name" not in df.columns: df["bu_name"] = "Other / Unclassified"
+    if "region" not in df.columns: df["region"] = "Others"
     return df
 
 # --------------- Duplicate detection ---------------
@@ -258,7 +276,7 @@ def insert_escalation(customer, issue, sentiment, urgency, severity,
             id,customer,issue,issue_hash,sentiment,urgency,severity,criticality,category,
             status,timestamp,action_taken,owner,owner_email,escalated,priority,
             likely_to_escalate,action_owner,status_update_date,user_feedback,duplicate_of,
-            bu_code,bu_name,region
+            bu_code, bu_name, region
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
             new_id, customer, issue, issue_hash, sentiment, urgency, severity, criticality, category,
             "Open", now, "", "", owner_email or "", escalation_flag, priority,
@@ -283,15 +301,13 @@ def add_or_skip_escalation(customer, issue, sentiment, urgency, severity,
         try: log_escalation_action("duplicate_detected", dup_id, "system", f"duplicate skipped; score={score:.3f}; customer={customer}")
         except Exception: pass
         _mark_processed_hash(h); return (False,dup_id,score)
-
-    # BU & Region
-    bu_code, bu_name = classify_bu(issue)
-    region = bucketize_region(country or "India", state=state, city=city, text_hint=issue)
-
+    # BU/Region
+    bu_code, bu_name = classify_bu(issue) if _BU_OK else ("OTHER","Other / Unclassified")
+    region = bucketize_region(country or "India", state, city, text_hint=issue) if _BU_OK else "Others"
     new_id = insert_escalation(
-        customer, issue, sentiment, urgency, severity, criticality,
-        category, escalation_flag, likely_to_escalate, owner_email,
-        issue_hash=h, duplicate_of=None, bu_code=bu_code, bu_name=bu_name, region=region
+        customer, issue, sentiment, urgency, severity, criticality, category, escalation_flag,
+        likely_to_escalate, owner_email, issue_hash=h, duplicate_of=None,
+        bu_code=bu_code, bu_name=bu_name, region=region
     )
     _mark_processed_hash(h); return (True,new_id,1.0)
 
@@ -383,7 +399,7 @@ def predict_escalation(m, s, u, sev, c):
 def send_alert(message:str, via:str="email", recipient:str|None=None):
     if via=="email":
         try:
-            to_addr = recipient if recipient else (ALERT_RECIPIENT or EMAIL_USER)
+            to_addr = recipient if recipient else ALERT_RECIPIENT
             if not to_addr:
                 st.warning("No email recipient configured."); return
             msg = MIMEText(message, 'plain', 'utf-8'); msg['Subject']=EMAIL_SUBJECT
@@ -417,7 +433,8 @@ def email_polling_job():
         for e in parse_emails():
             s,u,sev,c,cat,esc = analyze_issue(e["issue"])
             likely = predict_escalation(m,s,u,sev,c)
-            add_or_skip_escalation(e["customer"], e["issue"], s,u,sev,c,cat,esc, likely)
+            # Email has no country/state/city—use India/Others fallback
+            add_or_skip_escalation(e["customer"], e["issue"], s,u,sev,c,cat,esc, likely, country="India")
         time.sleep(60)
 
 # ---------------- Streamlit UI ----------------
@@ -428,7 +445,7 @@ except Exception: pass
 try: load_custom_plugins()
 except Exception: pass
 
-# Styles (header + cards)
+# Styles
 st.markdown("""
 <style>
   .sticky-header{position:sticky;top:0;z-index:999;background:linear-gradient(135deg,#0ea5e9 0%,#7c3aed 100%);
@@ -444,25 +461,30 @@ st.markdown("""
   }
   details[data-testid="stExpander"] > summary{padding:8px 10px;font-weight:700;}
   details[data-testid="stExpander"] > div[role="region"]{padding:8px 10px 10px 10px;}
-
   div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"]{gap:.25rem !important;}
 
   .age{padding:4px 8px;border-radius:8px;color:#fff;font-weight:600;text-align:center;font-size:12px;}
   .summary{font-size:15px;color:#0f172a;margin-bottom:6px;}
 
-  .kv{font-size:12px;margin:2px 0;white-space:nowrap;}
-  .aisum{background:#0b1220;color:#e5f2ff;padding:10px 12px;border-radius:10px;
-         box-shadow:0 6px 14px rgba(0,0,0,.10);font-size:13px;}
-  .sla-pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#ef4444;color:#fff;font-weight:600;font-size:12px;}
-
   .kpi-panel{ margin-top:0 !important; background:transparent !important; border:0 !important; box-shadow:none !important; padding:0 !important; }
-  .kpi-gap{ height:22px !important; }
+  .kpi-gap{ height:18px !important; }
 
   .tag-pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:600;
             border:1px solid var(--c,#cbd5e1);color:var(--c,#334155);background:#fff;white-space:nowrap;}
 
   .controls-panel{ background:#fff; border:0; border-radius:12px; padding:10px 0 2px 0; margin:6px 0 2px 0; }
 
+  /* header row extras */
+  .sla-pill{display:inline-block;padding:6px 10px;border-radius:999px;background:#ef4444;color:#fff;font-weight:700;font-size:12px;}
+  .aisum{background:#0b1220;color:#e5f2ff;padding:10px 12px;border-radius:10px;
+         box-shadow:0 6px 14px rgba(0,0,0,.10);font-size:13px;}
+
+  /* totals + search row */
+  .counts-pill{display:inline-block;padding:6px 10px;border-radius:10px;background:#f8fafc;border:1px solid #e5e7eb;
+    font-weight:600;color:#334155;font-size:13px;white-space:nowrap;}
+  .compact-caption{ margin-bottom:4px; color:#64748b; font-size:12px; }
+
+  /* Inputs/labels uniform */
   div[data-testid="stTextInput"]  label,
   div[data-testid="stTextArea"]   label,
   div[data-testid="stSelectbox"]  label {
@@ -470,12 +492,10 @@ st.markdown("""
   }
   div[data-testid="stTextInput"] input,
   div[data-testid="stTextArea"] textarea {
-    background:#f3f4f6 !important; border:1px solid #e5e7eb !important; border-radius:8px !important;
-    height:40px !important; padding:8px 10px !important;
+    background:#f3f4f6 !important; border:1px solid #e5e7eb !important; border-radius:8px !important; height:40px !important; padding:8px 10px !important;
   }
   div[data-testid="stSelectbox"] div[role="combobox"]{
-    background:#f3f4f6 !important; border:1px solid #e5e7eb !important; border-radius:8px !important;
-    min-height:40px !important; padding:6px 10px !important; align-items:center !important;
+    background:#f3f4f6 !important; border:1px solid #e5e7eb !important; border-radius:8px !important; min-height:40px !important; padding:6px 10px !important; align-items:center !important;
   }
   .controls-panel .stButton>button{
     height:40px !important; border-radius:10px !important; padding:0 14px !important;
@@ -486,19 +506,19 @@ st.markdown("""
 
 # Sidebar navigation
 st.sidebar.title("🔍 Navigation")
-page = st.sidebar.radio("Go to", ["📊 Main Dashboard","📈 Advanced Analytics","📊 BU & Region Trends","🔥 SLA Heatmap","🧠 Enhancements","⚙️ Admin Tools"])
+page = st.sidebar.radio("Go to", ["📊 Main Dashboard","📈 Advanced Analytics","🔥 SLA Heatmap","🧠 Enhancements","📊 BU/Region Trends","⚙️ Admin Tools"])
 
-# Sidebar: email import
+# Sidebar — email import
 st.sidebar.markdown("### 📩 Email Integration")
 if st.sidebar.button("Fetch Emails"):
     mails = parse_emails(); m = train_model()
     for e in mails:
         s,u,sev,c,cat,esc = analyze_issue(e["issue"])
         likely = predict_escalation(m,s,u,sev,c)
-        add_or_skip_escalation(e["customer"], e["issue"], s,u,sev,c,cat,esc, likely)
+        add_or_skip_escalation(e["customer"], e["issue"], s,u,sev,c,cat,esc, likely, country="India")
     st.sidebar.success(f"✅ Processed {len(mails)} unread email(s). De-dup applied.")
 
-# Sidebar: upload
+# Sidebar — upload
 st.sidebar.header("📁 Upload Escalation Sheet")
 uploaded = st.sidebar.file_uploader("Choose an Excel file", type=["xlsx"])
 if uploaded:
@@ -511,27 +531,37 @@ if uploaded:
     need = [c for c in ["Customer","Issue"] if c not in df_x.columns]
     if need:
         st.sidebar.error("Missing required columns: " + ", ".join(need)); st.stop()
+    # Optional enrich via bucketizer if Country/State/City exist
+    text_cols = ["Issue"]
+    if _BU_OK and any(c in df_x.columns for c in ["Country","State","City"]):
+        df_x = enrich_with_bu_region(df_x, text_cols=text_cols,
+                                     country_col="Country" if "Country" in df_x.columns else "Customer",
+                                     state_col="State" if "State" in df_x.columns else None,
+                                     city_col="City" if "City" in df_x.columns else None)
     if st.sidebar.button("🔍 Analyze & Insert"):
-        # Enrich uploaded rows with BU/Region if possible
-        try:
-            df_x = enrich_with_bu_region(df_x, text_cols=["Issue"],
-                                         country_col="Country" if "Country" in df_x.columns else "Country",
-                                         state_col="State" if "State" in df_x.columns else "State",
-                                         city_col="City" if "City" in df_x.columns else "City")
-        except Exception:
-            pass
         m = train_model(); ok, dups = 0, 0
         for _, r in df_x.iterrows():
             issue = str(r.get("Issue","")).strip(); cust = str(r.get("Customer","Unknown")).strip()
             if not issue: continue
             text = summarize_issue_text(issue)
             s,u,sev,c,cat,esc = analyze_issue(text); likely = predict_escalation(m,s,u,sev,c)
-            country = r.get("Country", None); state = r.get("State", None); city = r.get("City", None)
-            created, _, _ = add_or_skip_escalation(cust, text, s,u,sev,c,cat,esc, likely, country=country, state=state, city=city)
+            # Use BU/Region from enriched df if present
+            bu_code, bu_name = (r.get("bu_code","OTHER"), r.get("bu_name","Other / Unclassified"))
+            region = r.get("region","Others")
+            if bu_code == "" or pd.isna(bu_code): bu_code, bu_name = classify_bu(text)
+            if region == "" or pd.isna(region):
+                region = bucketize_region(r.get("Country","India"), r.get("State"), r.get("City"), text_hint=text)
+            h = generate_issue_hash(text)
+            if _processed_hash_exists(h):
+                dups += 1; continue
+            created, _, _ = add_or_skip_escalation(
+                cust, text, s,u,sev,c,cat,esc, likely,
+                country=r.get("Country","India"), state=r.get("State"), city=r.get("City")
+            )
             ok += int(created); dups += int(not created)
         st.sidebar.success(f"🎯 Inserted {ok}, skipped {dups} duplicate(s).")
 
-# Sidebar: SLA manual check
+# Sidebar — SLA manual check
 st.sidebar.markdown("### ⏰ SLA Monitor")
 if st.sidebar.button("Trigger SLA Check"):
     df_t = fetch_escalations()
@@ -545,65 +575,67 @@ if st.sidebar.button("Trigger SLA Check"):
             send_alert(msg, via="teams"); send_alert(msg, via="email"); st.sidebar.success("✅ Alerts sent")
         else: st.sidebar.info("All SLAs healthy")
 
-# Sidebar: filters (including BU & Region)
-st.sidebar.markdown("### 🔍 Escalation Filters")
-_all = fetch_escalations()
+# Sidebar — Filters
+st.sidebar.markdown("### 🔍 Filters")
 status_opt    = st.sidebar.selectbox("Status",   ["All","Open","In Progress","Resolved"], index=0)
 severity_opt  = st.sidebar.selectbox("Severity", ["All","minor","major","critical"], index=0)
 sentiment_opt = st.sidebar.selectbox("Sentiment",["All","positive","neutral","negative"], index=0)
 category_opt  = st.sidebar.selectbox("Category", ["All","technical","support","dissatisfaction","safety","business","other"], index=0)
 
-bu_values = ["All"] + sorted([x for x in _all.get("bu_code", pd.Series(dtype=str)).dropna().astype(str).unique().tolist() if x])
-region_values = ["All"] + sorted([x for x in _all.get("region", pd.Series(dtype=str)).dropna().astype(str).unique().tolist() if x])
-bu_opt     = st.sidebar.selectbox("BU", bu_values, index=0)
-region_opt = st.sidebar.selectbox("Region", region_values, index=0)
+# BU & Region filters
+df_for_filters = fetch_escalations()
+bu_codes = sorted([b for b in df_for_filters.get("bu_code", pd.Series(dtype=str)).dropna().unique().tolist() if b], key=str)
+if not bu_codes: bu_codes = ["PPIBS","PSIBS","IDIBS","SPIBS","BMS","H&D","A2E","Solar","OTHER"]
+bu_opt = st.sidebar.multiselect("BU (code)", options=bu_codes, default=[])
+region_vals = sorted([r for r in df_for_filters.get("region", pd.Series(dtype=str)).dropna().unique().tolist() if r], key=str)
+if not region_vals: region_vals = ["North","East","South","West","NC","Others"]
+region_opt = st.sidebar.multiselect("Region", options=region_vals, default=[])
 
-# Sidebar: manual notifications (Teams & Email)
-st.sidebar.markdown("### 🔔 Manual Notifications")
-manual_msg = st.sidebar.text_area("Compose Alert", "🚨 Test alert from EscalateAI")
-cme1, cme2 = st.sidebar.columns(2)
-with cme1:
+# Sidebar — Notifications
+st.sidebar.markdown("### 📣 Manual Notifications")
+msg_text = st.sidebar.text_area("Compose message", "Test alert from EscalateAI")
+c1, c2 = st.sidebar.columns(2)
+with c1:
     if st.sidebar.button("Send MS Teams"):
-        send_alert(manual_msg, via="teams")
-        st.sidebar.success("✅ MS Teams alert sent")
-with cme2:
+        send_alert(msg_text, via="teams")
+        st.sidebar.success("✅ Teams alert sent")
+with c2:
     if st.sidebar.button("Send Email"):
-        send_alert(manual_msg, via="email")
+        send_alert(msg_text, via="email")
         st.sidebar.success("✅ Email alert sent")
 
-# Sidebar: WhatsApp & SMS — only for Resolved
+# Sidebar — WhatsApp & SMS (Resolved only)
 st.sidebar.markdown("### 📲 WhatsApp & SMS (Resolved only)")
 df_notify = fetch_escalations()
-st_notify = df_notify.get("status", pd.Series(dtype=str)).astype(str).str.strip().str.title()
-df_resolved = df_notify[st_notify=="Resolved"]
+df_resolved = df_notify[df_notify.get("status", pd.Series(dtype=str)).astype(str).str.strip().str.title()=="Resolved"]
 if not df_resolved.empty:
     esc_id = st.sidebar.selectbox("🔢 Select Resolved Escalation ID", df_resolved["id"].astype(str).tolist())
     phone = st.sidebar.text_input("📞 Phone Number", "+91", help="Include country code (e.g., +91)")
-    msg = st.sidebar.text_area("📨 Message", f"Your issue with ID {esc_id} has been resolved. Thank you!")
-    c1, c2 = st.sidebar.columns(2)
-    with c1:
+    wmsg = st.sidebar.text_area("📨 Message", f"Your issue with ID {esc_id} has been resolved. Thank you!")
+    wc1, wc2 = st.sidebar.columns(2)
+    with wc1:
         if st.sidebar.button("Send WhatsApp"):
             try:
-                ok = send_whatsapp_message(phone, msg) if callable(send_whatsapp_message) else False
+                ok = send_whatsapp_message(phone, wmsg) if callable(send_whatsapp_message) else False
                 st.sidebar.success(f"✅ WhatsApp sent to {phone}") if ok else st.sidebar.error("❌ WhatsApp API failure")
             except Exception as e:
                 st.sidebar.error(f"❌ WhatsApp send failed: {e}")
-    with c2:
+    with wc2:
         if st.sidebar.button("Send SMS"):
-            st.sidebar.success(f"✅ SMS sent to {phone}") if send_sms(phone, msg) else None
+            st.sidebar.success(f"✅ SMS sent to {phone}") if send_sms(phone, wmsg) else None
 else:
     st.sidebar.info("No resolved cases available for WhatsApp/SMS.")
 
-# Sidebar: downloads / misc / dev
+# Sidebar — Downloads / Dev
 st.sidebar.markdown("### 📤 Downloads")
-cl, cr = st.sidebar.columns(2)
-with cl:
+dl1, dl2 = st.sidebar.columns(2)
+with dl1:
     if st.sidebar.button("⬇️ All Complaints"):
         csv = fetch_escalations().to_csv(index=False)
         st.sidebar.download_button("Download CSV", csv, file_name="escalations.csv", mime="text/csv")
-with cr:
+with dl2:
     if st.sidebar.button("⬇️ Escalated Only"):
-        d = fetch_escalations(); d = d[d["escalated"].astype(str).str.lower()=="yes"] if not d.empty else d
+        d = fetch_escalations(); d = d[d.get("escalated", pd.Series(dtype=str)).astype(str).str.lower()=="yes"] if not d.empty else d
         if d.empty: st.sidebar.info("No escalated cases.")
         else:
             out = "escalated_cases.xlsx"; d.to_excel(out, index=False)
@@ -611,38 +643,28 @@ with cr:
                                                          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 st.sidebar.markdown("### 🛠️ Developer")
-dev1, dev2 = st.sidebar.columns(2)
-with dev1:
-    if st.sidebar.button("🔁 Force Rerun"):
-        st.rerun()
-with dev2:
-    if st.sidebar.button("🗑️ Reset DB (Dev)"):
-        try:
-            conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
-            cur.execute("DROP TABLE IF EXISTS escalations")
-            cur.execute("DROP TABLE IF EXISTS processed_hashes")
-            conn.commit(); conn.close()
-            # also clear in-memory cache
-            global_seen_hashes.clear()
-            st.sidebar.warning("Database reset. Please restart or rerun the app.")
-        except Exception as e:
-            st.sidebar.error(f"Reset failed: {e}")
-
+auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh", value=False)
+refresh_interval = st.sidebar.slider("Refresh Interval (sec)", 10, 60, 30)
+if auto_refresh: time.sleep(refresh_interval); st.rerun()
+if st.sidebar.button("🔁 Manual Refresh"): st.rerun()
 st.sidebar.markdown("### 📧 Daily Escalation Email")
 if st.sidebar.button("Send Daily Email"):
-    # defined later; call after definition
-    pass  # will be rebound below after function is defined
+    # uses function defined at bottom
+    pass  # button exists; function registered in scheduler below
 
 if st.sidebar.checkbox("🧪 View Raw Database"):
     st.sidebar.dataframe(fetch_escalations())
 
+if st.sidebar.button("🗑️ Reset Database (Dev Only)"):
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("DROP TABLE IF EXISTS escalations")
+    cur.execute("DROP TABLE IF EXISTS processed_hashes")
+    conn.commit(); conn.close()
+    st.sidebar.warning("Database reset. Please restart or re-upload.")
+
 if st.sidebar.checkbox("🌙 Dark Mode"):
     try: apply_dark_mode()
     except Exception: pass
-
-auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh", value=False)
-refresh_interval = st.sidebar.slider("Refresh Interval (sec)", 10, 60, 30)
-if auto_refresh: time.sleep(refresh_interval); st.rerun()
 
 # Helpers
 def filter_df_by_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
@@ -656,8 +678,7 @@ def filter_df_by_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
 # ---------------- Routing ----------------
 if page == "📊 Main Dashboard":
     df_all = fetch_escalations()
-    if not df_all.empty:
-        df_all['timestamp'] = pd.to_datetime(df_all['timestamp'], errors='coerce')
+    df_all['timestamp'] = pd.to_datetime(df_all['timestamp'], errors='coerce')
 
     tabs = st.tabs(["🗃️ All","🚩 Likely to Escalate","🔁 Feedback & Retraining","📊 Summary Analytics","ℹ️ How this Dashboard Works"])
 
@@ -665,18 +686,19 @@ if page == "📊 Main Dashboard":
     with tabs[0]:
         st.subheader("📊 Escalation Kanban Board — All Cases")
 
-        # 1) Apply sidebar filters first
+        # Apply sidebar filters
         filt = df_all.copy()
         if status_opt != "All":   filt = filt[filt["status"].astype(str).str.strip().str.title()==status_opt]
         if severity_opt != "All": filt = filt[filt["severity"].astype(str).str.lower()==severity_opt.lower()]
         if sentiment_opt != "All":filt = filt[filt["sentiment"].astype(str).str.lower()==sentiment_opt.lower()]
         if category_opt != "All": filt = filt[filt["category"].astype(str).str.lower()==category_opt.lower()]
-        if bu_opt != "All":       filt = filt[filt["bu_code"].astype(str)==bu_opt]
-        if region_opt != "All":   filt = filt[filt["region"].astype(str)==region_opt]
+        if bu_opt:                filt = filt[filt["bu_code"].astype(str).isin(bu_opt)]
+        if region_opt:            filt = filt[filt["region"].astype(str).isin(region_opt)]
 
-        # Row A: Escalation View | SLA | AI
-        rowA_left, rowA_mid, rowA_right = st.columns([0.50, 0.18, 0.32])
-        with rowA_left:
+        # --- Row A: Escalation View + SLA + AI (one line) ---
+        rowA_l, rowA_m, rowA_r = st.columns([0.58, 0.14, 0.28])
+
+        with rowA_l:
             view_radio = st.radio(
                 "Escalation View",
                 ["All", "Likely to Escalate", "Not Likely", "SLA Breach"],
@@ -686,13 +708,14 @@ if page == "📊 Main Dashboard":
         _f = filt.copy()
         _f['timestamp'] = pd.to_datetime(_f['timestamp'], errors='coerce')
         sla_breaches = _f[
-            (_f['status'].astype(str).str.title()!='Resolved')
+            (_f['status'].astype(str).str.strip().str.title()!='Resolved')
             & (_f['priority'].astype(str).str.lower()=='high')
             & ((datetime.datetime.now()-_f['timestamp']) > datetime.timedelta(minutes=10))
         ]
-        with rowA_mid:
+        with rowA_m:
             st.markdown(f"<span class='sla-pill'>⏱️ {len(sla_breaches)} SLA breach(s)</span>", unsafe_allow_html=True)
-        with rowA_right:
+
+        with rowA_r:
             try: ai_text = summarize_escalations()
             except Exception: ai_text = "Summary unavailable."
             st.markdown(f"<div class='aisum'><b>🧠 AI Summary</b><br>{ai_text}</div>", unsafe_allow_html=True)
@@ -715,28 +738,27 @@ if page == "📊 Main Dashboard":
             base["likely_calc"] = base.apply(_pred_row, axis=1)
             base = base[base["likely_calc"]=="Yes"] if view_radio=="Likely to Escalate" else base[base["likely_calc"]!="Yes"]
 
-        # Row B: Total | Search
-        rowB_total, rowB_search = st.columns([0.38, 0.62])
-        with rowB_search:
-            st.caption("🔎 Search")
-            q = st.text_input("Search cases", placeholder="ID, customer, issue, owner, email, status, BU, region…")
-        view = filter_df_by_query(base, q)
-        view["status"] = view["status"].fillna("Open").astype(str).str.strip().str.title()
-
+        # helper for totals
         def _counts_bar(dfvv: pd.DataFrame) -> str:
             if dfvv is None or dfvv.empty:
-                return "**Total: 0**  |  Open: 0  |  In Progress: 0  |  Resolved: 0"
+                return "Total: 0  |  Open: 0  |  In Progress: 0  |  Resolved: 0"
             s = dfvv['status'].astype(str).str.strip().str.title()
-            total = len(dfvv)
-            open_c = (s=="Open").sum()
-            ip_c   = (s=="In Progress").sum()
-            res_c  = (s=="Resolved").sum()
-            return f"**Total: {total}** &nbsp;&nbsp;|&nbsp;&nbsp; Open: {open_c} &nbsp;&nbsp;|&nbsp;&nbsp; In Progress: {ip_c} &nbsp;&nbsp;|&nbsp;&nbsp; Resolved: {res_c}"
+            total = len(dfvv); open_c = (s=="Open").sum(); ip_c = (s=="In Progress").sum(); res_c = (s=="Resolved").sum()
+            return f"Total: {total}  |  Open: {open_c}  |  In Progress: {ip_c}  |  Resolved: {res_c}"
 
-        with rowB_total:
-            st.markdown(_counts_bar(view), unsafe_allow_html=True)
+        # --- Row B: compact Total left + compact Search right ---
+        rowB_l, rowB_r = st.columns([0.55, 0.45])
+        with rowB_r:
+            st.markdown("<div class='compact-caption'>🔎 Search</div>", unsafe_allow_html=True)
+            q = st.text_input("Search cases", placeholder="ID, customer, issue, owner, email, status, BU, region…", key="search_cases", label_visibility="collapsed")
 
-        # Kanban
+        # Build final view
+        view = filter_df_by_query(base, q)
+        view["status"] = view["status"].fillna("Open").astype(str).str.strip().str.title()
+        with rowB_l:
+            st.markdown(f"<span class='counts-pill'>{_counts_bar(view)}</span>", unsafe_allow_html=True)
+
+        # Kanban columns
         c1, c2, c3 = st.columns(3)
         counts = view['status'].value_counts()
         cols = {"Open": c1, "In Progress": c2, "Resolved": c3}
@@ -787,24 +809,29 @@ if page == "📊 Main Dashboard":
                             st.markdown("<div class='kpi-panel'>", unsafe_allow_html=True)
                             ka1, ka2, ka3 = st.columns(3)
                             with ka1:
-                                st.markdown(f"<div class='kv'>📛 <b>Severity</b> <span class='tag-pill' style='--c:{sev_color}; border-color:{sev_color}; color:{sev_color};'>{sv.capitalize()}</span></div>", unsafe_allow_html=True)
+                                st.markdown(f"<div>📛 <b>Severity</b> <span class='tag-pill' style='--c:{sev_color}; border-color:{sev_color}; color:{sev_color};'>{sv.capitalize()}</span></div>", unsafe_allow_html=True)
                             with ka2:
-                                st.markdown(f"<div class='kv'>⚡ <b>Urgency</b> <span class='tag-pill' style='--c:{urg_color}; border-color:{urg_color}; color:{urg_color};'>{'High' if u=='high' else 'Normal'}</span></div>", unsafe_allow_html=True)
+                                st.markdown(f"<div>⚡ <b>Urgency</b> <span class='tag-pill' style='--c:{urg_color}; border-color:{urg_color}; color:{urg_color};'>{'High' if u=='high' else 'Normal'}</span></div>", unsafe_allow_html=True)
                             with ka3:
-                                st.markdown(f"<div class='kv'>🎯 <b>Criticality</b> <span class='tag-pill' style='--c:#8b5cf6; border-color:#8b5cf6; color:#8b5cf6;'>{cr.capitalize()}</span></div>", unsafe_allow_html=True)
+                                st.markdown(f"<div>🎯 <b>Criticality</b> <span class='tag-pill' style='--c:#8b5cf6; border-color:#8b5cf6; color:#8b5cf6;'>{cr.capitalize()}</span></div>", unsafe_allow_html=True)
+
                             st.markdown("<div class='kpi-gap'></div>", unsafe_allow_html=True)
+
                             kb1, kb2, kb3 = st.columns(3)
                             with kb1:
-                                st.markdown(f"<div class='kv'>📂 <b>Category</b> <span class='tag-pill'>{(row.get('category') or 'other').capitalize()}</span></div>", unsafe_allow_html=True)
+                                st.markdown(f"<div>📂 <b>Category</b> <span class='tag-pill'>{(row.get('category') or 'other').capitalize()}</span></div>", unsafe_allow_html=True)
                             with kb2:
-                                st.markdown(f"<div class='kv'>💬 <b>Sentiment</b> <span class='tag-pill' style='--c:{sent_color}; border-color:{sent_color}; color:{sent_color};'>{s.capitalize()}</span></div>", unsafe_allow_html=True)
+                                st.markdown(f"<div>💬 <b>Sentiment</b> <span class='tag-pill' style='--c:{sent_color}; border-color:{sent_color}; color:{sent_color};'>{s.capitalize()}</span></div>", unsafe_allow_html=True)
                             with kb3:
-                                st.markdown(f"<div class='kv'>📈 <b>Likely</b> <span class='tag-pill' style='--c:{esc_color}; border-color:{esc_color}; color:{esc_color};'>{likely}</span></div>", unsafe_allow_html=True)
+                                st.markdown(f"<div>📈 <b>Likely</b> <span class='tag-pill' style='--c:{esc_color}; border-color:{esc_color}; color:{esc_color};'>{likely}</span></div>", unsafe_allow_html=True)
+
                             st.markdown("</div>", unsafe_allow_html=True)
 
                             # Controls
                             st.markdown("<div class='controls-panel'>", unsafe_allow_html=True)
                             prefix = f"case_{case_id}"
+
+                            # Row A: Status + Action Taken
                             ra1, ra2 = st.columns([1.0, 2.2])
                             with ra1:
                                 current_status = (row.get("status") or "Open").strip().title()
@@ -816,11 +843,15 @@ if page == "📊 Main Dashboard":
                                 )
                             with ra2:
                                 action_taken = st.text_input("Action Taken", row.get("action_taken",""), key=f"{prefix}_action")
+
+                            # Row B: Owner | Owner Email
                             rb1, rb2 = st.columns(2)
                             with rb1:
                                 owner = st.text_input("Owner", row.get("owner",""), key=f"{prefix}_owner")
                             with rb2:
                                 owner_email = st.text_input("Owner Email", row.get("owner_email",""), key=f"{prefix}_email")
+
+                            # Row C: Save | N+1 Email | Escalate
                             rc1, rc2, rc3 = st.columns([0.9, 1.6, 1.0])
                             with rc1:
                                 if st.button("💾 Save", key=f"{prefix}_save"):
@@ -840,6 +871,7 @@ if page == "📊 Main Dashboard":
                                         send_alert(f"Case {case_id} escalated to N+1.", via="email", recipient=n1_email)
                                     send_alert(f"Case {case_id} escalated to N+1.", via="teams")
                                     st.success("🚀 Escalated to N+1")
+
                             st.markdown("</div>", unsafe_allow_html=True)
                     except Exception as e:
                         st.error(f"Error rendering case #{row.get('id','Unknown')}: {e}")
@@ -865,28 +897,54 @@ if page == "📊 Main Dashboard":
     with tabs[2]:
         st.subheader("🔁 Feedback & Retraining")
         d = fetch_escalations()
-        if not d.empty:
-            d = d[d["likely_to_escalate"].notnull()]
-            for _, r in d.iterrows():
-                with st.expander(f"🆔 {r['id']}"):
-                    fb   = st.selectbox("Escalation Accuracy", ["Correct","Incorrect"], key=f"fb_{r['id']}")
-                    sent = st.selectbox("Sentiment", ["positive","neutral","negative"], key=f"sent_{r['id']}")
-                    crit = st.selectbox("Criticality", ["low","medium","high","urgent"], key=f"crit_{r['id']}")
-                    notes= st.text_area("Notes", key=f"note_{r['id']}")
-                    if st.button("Submit", key=f"btn_{r['id']}"):
-                        owner_email_ = r.get("owner_email", EMAIL_USER)
-                        update_escalation_status(r['id'], r.get("status","Open"),
-                                                 r.get("action_taken",""), r.get("owner",""),
-                                                 owner_email_, notes=notes, sentiment=sent, criticality=crit)
-                        if owner_email_: send_alert("Feedback recorded on your case.", via="email", recipient=owner_email_)
-                        st.success("Feedback saved.")
-        if st.button("🔁 Retrain Model"):
-            st.info("Retraining model…")
-            m = train_model()
-            st.success("Model retrained.") if m else st.warning("Not enough data to retrain.")
-            if m:
-                try: show_feature_importance(m)
-                except Exception: pass
+        if d.empty:
+            st.info("No cases available.")
+        else:
+            d = d.sort_values(by="timestamp", ascending=False).reset_index(drop=True)
+            # show 3 cases per page
+            per_page = 3
+            if "fb_page" not in st.session_state: st.session_state.fb_page = 0
+            total_pages = max(1, (len(d) + per_page - 1) // per_page)
+
+            nav_c1, nav_c2, nav_c3 = st.columns([0.15, 0.7, 0.15])
+            with nav_c1:
+                if st.button("◀️ Prev", disabled=(st.session_state.fb_page==0)):
+                    st.session_state.fb_page -= 1
+            with nav_c2:
+                st.markdown(f"<div style='text-align:center;color:#64748b;'>Page {st.session_state.fb_page+1} of {total_pages}</div>", unsafe_allow_html=True)
+            with nav_c3:
+                if st.button("Next ▶️", disabled=(st.session_state.fb_page >= total_pages-1)):
+                    st.session_state.fb_page += 1
+
+            start = st.session_state.fb_page * per_page
+            slice_df = d.iloc[start:start+per_page]
+
+            cc1, cc2, cc3 = st.columns(3)
+            cols = [cc1, cc2, cc3]
+            for (idx, r), col in zip(slice_df.iterrows(), cols):
+                with col:
+                    with st.expander(f"🆔 {r['id']}", expanded=True):
+                        fb   = st.selectbox("Escalation Accuracy", ["Correct","Incorrect"], key=f"fb_{r['id']}")
+                        sent = st.selectbox("Sentiment", ["positive","neutral","negative"], key=f"sent_{r['id']}")
+                        crit = st.selectbox("Criticality", ["low","medium","high","urgent"], key=f"crit_{r['id']}")
+                        notes= st.text_area("Notes", key=f"note_{r['id']}")
+                        if st.button("Submit", key=f"btn_{r['id']}"):
+                            owner_email_ = r.get("owner_email", EMAIL_USER)
+                            update_escalation_status(r['id'], r.get("status","Open"),
+                                                     r.get("action_taken",""), r.get("owner",""),
+                                                     owner_email_, notes=notes, sentiment=sent, criticality=crit)
+                            if owner_email_:
+                                send_alert("Feedback recorded on your case.", via="email", recipient=owner_email_)
+                            st.success("Feedback saved.")
+
+            st.markdown("---")
+            if st.button("🔁 Retrain Model"):
+                st.info("Retraining model…")
+                m = train_model()
+                st.success("Model retrained.") if m else st.warning("Not enough data to retrain.")
+                if m:
+                    try: show_feature_importance(m)
+                    except Exception: pass
 
     # ---------------- Tab 3: Summary Analytics ----------------
     with tabs[3]:
@@ -898,58 +956,16 @@ if page == "📊 Main Dashboard":
     with tabs[4]:
         st.subheader("ℹ️ How this Dashboard Works")
         st.markdown("""
-- **Kanban:** Open (🟧), In Progress (🔵), Resolved (🟩)
-- **Expander layout inside each card:**
-  - Summary + Age chip
-  - **KPI panel**: 2 rows (Severity, Urgency, Criticality, Category, Sentiment, Likely)
-  - **Controls**
-    - Row A: **Status (select) + Action Taken**
-    - Row B: **Owner + Owner Email**
-    - Row C: **Save** (left) + **N+1 Email** + **Escalate to N+1**
-- **Escalation View** includes **SLA Breach** (unresolved high-priority > 10 minutes).
-- **Likely to Escalate** uses the model (rules fallback until enough data).
+- **Header row:** Escalation View + SLA breach capsule + AI summary
+- **Totals/Search row:** **Total (filtered)** pill on the left; **compact search** on the right
+- **Kanban Columns:** Open (🟧), In Progress (🔵), Resolved (🟩)
+- **Expander layout:**
+  - Issue summary + age chip
+  - KPI panel (2 rows): Severity, Urgency, Criticality, Category, Sentiment, Likely
+  - Controls: **Status + Action Taken**, **Owner + Owner Email**, **Save + N+1 Email + Escalate to N+1**
+- **Filters:** in the sidebar (Status, Severity, Sentiment, Category, BU, Region)
+- **Notifications:** Compose & send to **Teams/Email** from sidebar; **WhatsApp/SMS** only for **Resolved**.
         """)
-
-elif page == "📊 BU & Region Trends":
-    st.title("📊 BU & Region Trends")
-    d = fetch_escalations()
-    if d.empty:
-        st.info("No data available.")
-    else:
-        # Apply the same sidebar filters
-        df = d.copy()
-        if status_opt != "All":   df = df[df["status"].astype(str).str.strip().str.title()==status_opt]
-        if severity_opt != "All": df = df[df["severity"].astype(str).str.lower()==severity_opt.lower()]
-        if sentiment_opt != "All":df = df[df["sentiment"].astype(str).str.lower()==sentiment_opt.lower()]
-        if category_opt != "All": df = df[df["category"].astype(str).str.lower()==category_opt.lower()]
-        if bu_opt != "All":       df = df[df["bu_code"].astype(str)==bu_opt]
-        if region_opt != "All":   df = df[df["region"].astype(str)==region_opt]
-
-        # BU distribution (with labels)
-        st.subheader("Business Unit Distribution")
-        bu_counts = df.get("bu_code", pd.Series(dtype=str)).astype(str).replace("", np.nan).dropna().value_counts()
-        if bu_counts.empty:
-            st.caption("No BU data for the current filters.")
-        else:
-            fig, ax = plt.subplots(figsize=(8,3))
-            bars = ax.bar(bu_counts.index, bu_counts.values)
-            for b, v in zip(bars, bu_counts.values):
-                ax.text(b.get_x()+b.get_width()/2, b.get_height(), str(int(v)), ha='center', va='bottom')
-            ax.set_xlabel("BU Code"); ax.set_ylabel("Count")
-            st.pyplot(fig)
-
-        # Region distribution (with labels)
-        st.subheader("Region Distribution")
-        reg_counts = df.get("region", pd.Series(dtype=str)).astype(str).replace("", np.nan).dropna().value_counts()
-        if reg_counts.empty:
-            st.caption("No Region data for the current filters.")
-        else:
-            fig2, ax2 = plt.subplots(figsize=(8,3))
-            bars2 = ax2.bar(reg_counts.index, reg_counts.values)
-            for b, v in zip(bars2, reg_counts.values):
-                ax2.text(b.get_x()+b.get_width()/2, b.get_height(), str(int(v)), ha='center', va='bottom')
-            ax2.set_xlabel("Region"); ax2.set_ylabel("Count")
-            st.pyplot(fig2)
 
 elif page == "🔥 SLA Heatmap":
     st.subheader("🔥 SLA Heatmap")
@@ -966,6 +982,32 @@ elif page == "🧠 Enhancements":
 elif page == "📈 Advanced Analytics":
     try: show_analytics_view()
     except Exception as e: st.error("❌ Failed to load analytics view."); st.exception(e)
+
+elif page == "📊 BU/Region Trends":
+    st.subheader("📊 Trends by BU & Region")
+    d = fetch_escalations()
+    if d.empty:
+        st.info("No data yet.")
+    else:
+        # BU distribution with labels
+        st.markdown("#### BU Distribution")
+        bu_counts = d.get("bu_code", pd.Series(dtype=str)).value_counts().sort_values(ascending=False)
+        fig, ax = plt.subplots(figsize=(6,3))
+        bu_counts.plot(kind="bar", ax=ax)
+        for i, v in enumerate(bu_counts.values):
+            ax.text(i, v + (max(bu_counts.values)*0.02 if len(bu_counts) else 0.5), str(v), ha='center', va='bottom', fontsize=10)
+        ax.set_ylabel("Count"); ax.set_xlabel("BU Code"); ax.grid(axis='y', alpha=0.2)
+        st.pyplot(fig, clear_figure=True)
+
+        # Region distribution with labels
+        st.markdown("#### Region Distribution")
+        region_counts = d.get("region", pd.Series(dtype=str)).value_counts().sort_values(ascending=False)
+        fig2, ax2 = plt.subplots(figsize=(6,3))
+        region_counts.plot(kind="bar", ax=ax2, color="#4ade80")
+        for i, v in enumerate(region_counts.values):
+            ax2.text(i, v + (max(region_counts.values)*0.02 if len(region_counts) else 0.5), str(v), ha='center', va='bottom', fontsize=10)
+        ax2.set_ylabel("Count"); ax2.set_xlabel("Region"); ax2.grid(axis='y', alpha=0.2)
+        st.pyplot(fig2, clear_figure=True)
 
 elif page == "⚙️ Admin Tools":
     def show_admin_panel():
@@ -994,9 +1036,9 @@ elif page == "⚙️ Admin Tools":
 if 'email_thread' not in st.session_state:
     t = threading.Thread(target=email_polling_job, daemon=True); t.start(); st.session_state['email_thread']=t
 
-# Daily email scheduler + sidebar button binding
+# Daily email scheduler
 def send_daily_escalation_email():
-    d = fetch_escalations(); e = d[d["likely_to_escalate"].astype(str).str.lower()=="yes"] if not d.empty else d
+    d = fetch_escalations(); e = d[d.get("likely_to_escalate", pd.Series(dtype=str)).astype(str).str.lower()=="yes"] if not d.empty else d
     if e.empty: return
     path = "daily_escalated_cases.xlsx"; e.to_excel(path, index=False)
     summary = f"""🔔 Daily Escalation Summary – {datetime.datetime.now():%Y-%m-%d}
@@ -1017,19 +1059,11 @@ Please find the attached Excel file for full details."""
             s.send_message(msg)
     except Exception as ex: print(f"❌ Failed to send daily email: {ex}")
 
-# Bind the sidebar button now that the function exists
-if 'daily_email_bound' not in st.session_state:
-    # re-render the sidebar button action
-    if st.sidebar.button("Send Daily Email", key="send_daily"):
-        send_daily_escalation_email()
-        st.sidebar.success("✅ Daily escalation email sent.")
-    st.session_state['daily_email_bound'] = True
-
-import schedule, time as _t
 def schedule_daily_email():
     schedule.every().day.at("09:00").do(send_daily_escalation_email)
-    def run(): 
-        while True: schedule.run_pending(); _t.sleep(60)
+    def run():
+        while True:
+            schedule.run_pending(); time.sleep(60)
     threading.Thread(target=run, daemon=True).start()
 
 if 'daily_email_thread' not in st.session_state:
