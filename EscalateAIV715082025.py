@@ -565,8 +565,11 @@ if st.sidebar.button("Trigger SLA Check"):
     if df_t.empty: st.sidebar.info("No data yet.")
     else:
         df_t['timestamp'] = pd.to_datetime(df_t['timestamp'], errors='coerce')
-        breaches = df_t[(df_t['status'].str.title()!='Resolved') & (df_t['priority'].str.lower()=='high') &
-                        ((datetime.datetime.now()-df_t['timestamp']) > datetime.timedelta(minutes=10))]
+        breaches = df_t[
+            (df_t['status'].astype(str).str.title()!='Resolved') &
+            (df_t['priority'].astype(str).str.lower()=='high') &
+            ((datetime.datetime.now()-df_t['timestamp']) > datetime.timedelta(minutes=10))
+        ]
         if not breaches.empty:
             msg = f"🚨 SLA breach for {len(breaches)} case(s)!"
             send_alert(msg, via="teams"); send_alert(msg, via="email"); st.sidebar.success("✅ Alerts sent")
@@ -585,7 +588,7 @@ region_opt    = st.sidebar.selectbox("Region",   ["All","North","East","South","
 st.sidebar.markdown("### 📲 WhatsApp & SMS Alerts")
 sel_status = st.sidebar.selectbox("Case Status", ["Open","In Progress","Resolved"])
 df_notify = fetch_escalations()
-df_sel = df_notify[df_notify["status"].str.strip().str.title()==sel_status] if sel_status else df_notify
+df_sel = df_notify[df_notify["status"].astype(str).str.strip().str.title()==sel_status] if sel_status else df_notify
 if not df_sel.empty:
     esc_id = st.sidebar.selectbox("🔢 Select Escalation ID", df_sel["id"].astype(str).tolist())
     phone = st.sidebar.text_input("📞 Phone Number", "+91", help="Include country code (e.g., +91)")
@@ -613,7 +616,7 @@ with cl:
         st.sidebar.download_button("Download CSV", csv, file_name="escalations.csv", mime="text/csv")
 with cr:
     if st.sidebar.button("⬇️ Escalated Only"):
-        d = fetch_escalations(); d = d[d["escalated"].str.lower()=="yes"] if not d.empty else d
+        d = fetch_escalations(); d = d[d["escalated"].astype(str).str.lower()=="yes"] if not d.empty else d
         if d.empty: st.sidebar.info("No escalated cases.")
         else:
             out = "escalated_cases.xlsx"; d.to_excel(out, index=False)
@@ -658,8 +661,8 @@ if page == "📊 Main Dashboard":
             _df = df_all.copy()
             _df['timestamp'] = pd.to_datetime(_df['timestamp'], errors='coerce')
             sla_breaches = _df[
-                (_df['status'].str.title()!='Resolved')
-                & (_df['priority'].str.lower()=='high')
+                (_df['status'].astype(str).str.title()!='Resolved')
+                & (_df['priority'].astype(str).str.lower()=='high')
                 & ((datetime.datetime.now()-_df['timestamp']) > datetime.timedelta(minutes=10))
             ]
             st.markdown(f"<span class='sla-pill'>⏱️ {len(sla_breaches)} SLA breach(s)</span>", unsafe_allow_html=True)
@@ -671,22 +674,22 @@ if page == "📊 Main Dashboard":
         # Escalation View control (includes SLA Breach)
         view_radio = st.radio("Escalation View", ["All", "Likely to Escalate", "Not Likely", "SLA Breach"], horizontal=True)
 
-        # Apply sidebar filters first
+        # Apply sidebar filters first (hardened with astype(str))
         filt = df_all.copy()
-        if status_opt    != "All": filt = filt[filt["status"].str.strip().str.title()==status_opt]
-        if severity_opt  != "All": filt = filt[filt["severity"].str.lower()==severity_opt.lower()]
-        if sentiment_opt != "All": filt = filt[filt["sentiment"].str.lower()==sentiment_opt.lower()]
-        if category_opt  != "All": filt = filt[filt["category"].str.lower()==category_opt.lower()]
-        if bu_opt        != "All": filt = filt[filt["bu_code"].fillna("OTHER").str.upper()==bu_opt.upper()]
-        if region_opt    != "All": filt = filt[filt["region"].fillna("Others").str.title()==region_opt.title()]
+        if status_opt    != "All": filt = filt[filt["status"].astype(str).str.strip().str.title()==status_opt]
+        if severity_opt  != "All": filt = filt[filt["severity"].astype(str).str.lower()==severity_opt.lower()]
+        if sentiment_opt != "All": filt = filt[filt["sentiment"].astype(str).str.lower()==sentiment_opt.lower()]
+        if category_opt  != "All": filt = filt[filt["category"].astype(str).str.lower()==category_opt.lower()]
+        if bu_opt        != "All": filt = filt[filt["bu_code"].fillna("OTHER").astype(str).str.upper()==bu_opt.upper()]
+        if region_opt    != "All": filt = filt[filt["region"].fillna("Others").astype(str).str.title()==region_opt.title()]
 
         # Apply escalation view radio
         if view_radio == "SLA Breach":
             _x = filt.copy()
             _x['timestamp'] = pd.to_datetime(_x['timestamp'], errors='coerce')
             filt = _x[
-                (_x['status'].str.title()!='Resolved')
-                & (_x['priority'].str.lower()=='high')
+                (_x['status'].astype(str).str.title()!='Resolved')
+                & (_x['priority'].astype(str).str.lower()=='high')
                 & ((datetime.datetime.now()-_x['timestamp']) > datetime.timedelta(minutes=10))
             ]
         elif view_radio != "All" and not filt.empty:
@@ -705,7 +708,7 @@ if page == "📊 Main Dashboard":
 
         # Search filter
         view = filter_df_by_query(filt.copy(), q)
-        view["status"] = view["status"].fillna("Open").str.strip().str.title()
+        view["status"] = view["status"].fillna("Open").astype(str).str.strip().str.title()
 
         # Kanban columns with counts in bar headers
         c1, c2, c3 = st.columns(3)
@@ -747,11 +750,10 @@ if page == "📊 Main Dashboard":
                             age_str, age_col = "N/A", "#6b7280"
 
                         with st.expander(f"🆔 {case_id} — {customer} {flag}", expanded=False):
-                            # Summary + Age
+                            # Summary + Age + BU/Region
                             r0a, r0b = st.columns([0.75, 0.25])
                             with r0a:
                                 st.markdown(f"<div class='summary'>{summary}</div>", unsafe_allow_html=True)
-                                # BU & Region tags
                                 st.markdown(
                                     f"<div style='margin-top:2px;'>"
                                     f"<span class='tag-pill'>BU: {row.get('bu_code','OTHER')}</span> "
@@ -783,15 +785,18 @@ if page == "📊 Main Dashboard":
                             st.markdown("<div class='controls-panel'>", unsafe_allow_html=True)
                             prefix = f"case_{case_id}"
 
-                            # Row A: Status (select) | Action Taken
+                            # Row A: Status (select) | Action Taken   (FIXED: no .str on plain string)
                             ra1, ra2 = st.columns([1.0, 2.2])
                             with ra1:
-                                current_status = (row.get("status") or "Open").strip().str.title() if isinstance(row.get("status"), str) else "Open"
-                                if current_status not in ["Open","In Progress","Resolved"]:
+                                status_raw = row.get("status")
+                                current_status = str(status_raw).strip().title() if status_raw else "Open"
+                                if current_status not in ["Open", "In Progress", "Resolved"]:
                                     current_status = "Open"
+
                                 new_status = st.selectbox(
-                                    "Status", ["Open","In Progress","Resolved"],
-                                    index=["Open","In Progress","Resolved"].index(current_status),
+                                    "Status",
+                                    ["Open", "In Progress", "Resolved"],
+                                    index=["Open", "In Progress", "Resolved"].index(current_status),
                                     key=f"{prefix}_status",
                                 )
                             with ra2:
@@ -939,14 +944,14 @@ if 'email_thread' not in st.session_state:
 
 # Daily email scheduler
 def send_daily_escalation_email():
-    d = fetch_escalations(); e = d[d["likely_to_escalate"].str.lower()=="yes"] if not d.empty else d
+    d = fetch_escalations(); e = d[d["likely_to_escalate"].astype(str).str.lower()=="yes"] if not d.empty else d
     if e.empty: return
     path = "daily_escalated_cases.xlsx"; e.to_excel(path, index=False)
     summary = f"""🔔 Daily Escalation Summary – {datetime.datetime.now():%Y-%m-%d}
 Total Likely to Escalate Cases: {len(e)}
-Open: {e[e['status'].str.strip().str.title()=='Open'].shape[0]}
-In Progress: {e[e['status'].str.strip().str.title()=='In Progress'].shape[0]}
-Resolved: {e[e['status'].str.strip().str.title()=='Resolved'].shape[0]}
+Open: {e[e['status'].astype(str).str.strip().str.title()=='Open'].shape[0]}
+In Progress: {e[e['status'].astype(str).str.strip().str.title()=='In Progress'].shape[0]}
+Resolved: {e[e['status'].astype(str).str.strip().str.title()=='Resolved'].shape[0]}
 Please find the attached Excel file for full details."""
     try:
         msg = MIMEMultipart(); msg['Subject']="📊 Daily Escalated Cases Report"; msg['From']=EMAIL_USER or "no-reply@escalateai"; msg['To']=ALERT_RECIPIENT or (EMAIL_USER or "")
