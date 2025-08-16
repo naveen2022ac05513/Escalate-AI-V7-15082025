@@ -69,11 +69,18 @@ except Exception:
     def summarize_escalations(): return "No summary available."
     def schedule_weekly_retraining(): pass
 
+#try:
+ #   from enhancement_dashboard import show_enhancement_dashboard
+#except Exception:
+ #   def show_enhancement_dashboard():
+  #      st.info("Enhancement dashboard not available.")
+
 try:
     from enhancement_dashboard import show_enhancement_dashboard
-except Exception:
-    def show_enhancement_dashboard():
-        st.info("Enhancement dashboard not available.")
+    show_enhancement_dashboard()
+except Exception as e:
+    import streamlit as st
+    st.error(f"Enhancement dashboard not available.\n\n{e}")
 
 # ---------------- Quick analytics view ----------------
 def show_analytics_view():
