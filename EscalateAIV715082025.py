@@ -3,11 +3,13 @@
 # EscalateAI — Customer Escalation Prediction & Management Tool
 # --------------------------------------------------------------------
 # New in this build:
-# • Clear gap between KPI Panel Row 1 and Row 2 (.kpi-gap)
-# • N+1 Email field + Escalate button moved into the SAME row as Status + Save
-# • Clean expander panels and compact spacing maintained
-# • Everything else preserved: sticky header (1.5×), colored Kanban headers,
-#   SLA Breach radio, search, SMS/WhatsApp, duplicate detection, etc.
+# • Larger gap between KPI Panel Row 1 and Row 2 (no extra space above KPIs)
+# • Controls layout (inside each expander):
+#     Row A: Status label + Status dropdown + Action Taken
+#     Row B: Owner + Owner Email
+#     Row C: N+1 Email ID + Escalate to N+1 button + Save button
+# • Clean, compact UI maintained (sticky title, colors, search, SLA Breach view)
+# • SMS/WhatsApp, duplicate detection, analytics, email polling, etc.
 # --------------------------------------------------------------------
 
 import os, re, time, datetime, threading, hashlib, sqlite3, smtplib, requests, imaplib, email, traceback
@@ -402,18 +404,18 @@ except Exception: pass
 try: load_custom_plugins()
 except Exception: pass
 
-# Styles (includes .kpi-gap)
+# Styles (gap, compact headings, etc.)
 st.markdown("""
 <style>
   .sticky-header{position:sticky;top:0;z-index:999;background:linear-gradient(135deg,#0ea5e9 0%,#7c3aed 100%);
     padding:12px 16px;border-radius:0 0 12px 12px;box-shadow:0 8px 20px rgba(0,0,0,.12);}
   .sticky-header h1{color:#fff;margin:0;text-align:center;font-size:30px;line-height:1.2;} /* 1.5× */
 
-  /* Center Kanban headers */
+  /* Kanban headers */
   .kanban-title{display:flex;justify-content:center;align-items:center;gap:8px;border-radius:10px;
     padding:8px 10px;color:#fff;text-align:center;box-shadow:0 6px 14px rgba(0,0,0,.07);margin:4px 0;font-size:14px;}
 
-  /* Expander (no top transparent bar) */
+  /* Expander */
   details[data-testid="stExpander"]{
     background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;margin:2px 0 !important;
     box-shadow:0 4px 10px rgba(0,0,0,.05);
@@ -421,17 +423,13 @@ st.markdown("""
   details[data-testid="stExpander"] > summary{padding:8px 10px;font-weight:700;}
   details[data-testid="stExpander"] > div[role="region"]{padding:8px 10px 10px 10px;}
 
-  /* Compact vertical gaps */
+  /* Tighten vertical gaps */
   div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"]{gap:.25rem !important;}
 
-  .badge{padding:4px 8px;border-radius:999px;color:#fff;font-size:12px;display:inline-block;text-align:center;white-space:nowrap;}
-  .chip{display:inline-block;padding:4px 8px;border-radius:999px;background:#f3f4f6;margin-right:6px;font-size:12px;white-space:nowrap;}
   .age{padding:4px 8px;border-radius:8px;color:#fff;font-weight:600;text-align:center;font-size:12px;}
 
-  .summary{font-size:15px;color:#0f172a;margin-bottom:10px;}
+  .summary{font-size:15px;color:#0f172a;margin:0 0 4px 0;}  /* NO extra space above KPIs */
   .kv{font-size:12px;margin:2px 0;white-space:nowrap;}
-  .spacer8{height:8px;}
-  .rowpad{height:6px;}
 
   .aisum{background:#0b1220;color:#e5f2ff;padding:10px 12px;border-radius:10px;
          box-shadow:0 6px 14px rgba(0,0,0,.10);font-size:13px;}
@@ -439,17 +437,17 @@ st.markdown("""
 
   /* Panels + chips */
   .kpi-panel{
-    background:#f8fafc;border:1px solid #e5e7eb;border-radius:12px;padding:10px 12px;margin:4px 0 8px 0;
+    background:#f8fafc;border:1px solid #e5e7eb;border-radius:12px;padding:10px 12px;margin:0 0 10px 0; /* no top margin */
   }
   .controls-panel{
     background:#ffffff;border:1px dashed #e5e7eb;border-radius:12px;padding:10px 12px;margin:6px 0 2px 0;
   }
-  .field-label-inline{font-size:12px;font-weight:600;color:#475569;padding-top:8px;}
+  .field-label-inline{font-size:12px;font-weight:600;color:#475569;padding-top:6px;}
   .tag-pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:600;
             border:1px solid var(--c,#cbd5e1);color:var(--c,#334155);background:#fff;white-space:nowrap;}
   .soft-hr{border:0;height:1px;background:linear-gradient(to right, transparent, #e5e7eb, transparent);margin:6px 0 8px 0;}
-  .btn-save > div button{width:100%;}
-  .kpi-gap{height:12px;}   /* space between KPI rows */
+  .kpi-gap{height:18px;}   /* BIGGER gap between KPI rows */
+  .btn-wide > div button{width:100%;}
 </style>
 <div class="sticky-header"><h1>🚨 EscalateAI – AI Based Customer Escalation Prediction & Management Tool</h1></div>
 """, unsafe_allow_html=True)
@@ -679,7 +677,7 @@ if page == "📊 Main Dashboard":
                             with r0b:
                                 st.markdown(f"<div style='text-align:right;'><span class='age' style='background:{age_col};'>Age: {age_str}</span></div>", unsafe_allow_html=True)
 
-                            # --- KPI PANEL (two rows with gap) ---
+                            # --- KPI PANEL (two rows with bigger gap) ---
                             st.markdown("<div class='kpi-panel'>", unsafe_allow_html=True)
                             ka1, ka2, ka3 = st.columns(3)
                             with ka1:
@@ -689,7 +687,7 @@ if page == "📊 Main Dashboard":
                             with ka3:
                                 st.markdown(f"<div class='kv'>🎯 <b>Criticality</b> <span class='tag-pill' style='--c:#8b5cf6; border-color:#8b5cf6; color:#8b5cf6;'>{cr.capitalize()}</span></div>", unsafe_allow_html=True)
 
-                            # GAP between KPI rows
+                            # BIGGER gap between KPI rows
                             st.markdown("<div class='kpi-gap'></div>", unsafe_allow_html=True)
 
                             kb1, kb2, kb3 = st.columns(3)
@@ -705,12 +703,13 @@ if page == "📊 Main Dashboard":
                             st.markdown("<hr class='soft-hr' />", unsafe_allow_html=True)
                             st.markdown("<div class='controls-panel'>", unsafe_allow_html=True)
 
-                            # One compact row: Status label | Status dropdown | Save | N+1 Email | Escalate
                             prefix = f"case_{case_id}"
-                            c_lbl, c_dd, c_save, c_n1, c_n1btn = st.columns([0.35, 1.1, 0.65, 1.2, 0.9])
-                            with c_lbl:
+
+                            # Row A: Status label | Status dropdown | Action Taken
+                            a1, a2, a3 = st.columns([0.35, 1.1, 2.1])
+                            with a1:
                                 st.markdown("<div class='field-label-inline'>Status</div>", unsafe_allow_html=True)
-                            with c_dd:
+                            with a2:
                                 cur = (row.get("status") or "Open").strip().title()
                                 new_status = st.selectbox(
                                     label="",
@@ -719,34 +718,38 @@ if page == "📊 Main Dashboard":
                                     key=f"{prefix}_status",
                                     label_visibility="collapsed",
                                 )
-                            with c_save:
-                                if st.button("💾 Save", key=f"{prefix}_save"):
-                                    update_escalation_status(
-                                        case_id, new_status,
-                                        row.get("action_taken",""),
-                                        row.get("owner",""),
-                                        row.get("owner_email",""),
-                                    )
-                                    st.success("✅ Saved")
-                            with c_n1:
+                            with a3:
+                                action_taken = st.text_input("Action Taken", row.get("action_taken",""), key=f"{prefix}_action")
+
+                            # Row B: Owner | Owner Email
+                            b1, b2 = st.columns(2)
+                            with b1:
+                                owner = st.text_input("Owner", row.get("owner",""), key=f"{prefix}_owner")
+                            with b2:
+                                owner_email = st.text_input("Owner Email", row.get("owner_email",""), key=f"{prefix}_email")
+
+                            # Row C: N+1 Email | Escalate to N+1 | Save
+                            c1, c2, c3 = st.columns([1.6, 0.9, 0.9])
+                            with c1:
                                 n1_email = st.text_input("N+1 Email ID", key=f"{prefix}_n1")
-                            with c_n1btn:
+                            with c2:
                                 if st.button("🚀 Escalate to N+1", key=f"{prefix}_n1btn"):
                                     update_escalation_status(
-                                        case_id, row.get("status","Open"),
-                                        row.get("action_taken",""),
-                                        row.get("owner",""),
+                                        case_id, new_status,
+                                        action_taken or row.get("action_taken",""),
+                                        owner or row.get("owner",""),
                                         n1_email
                                     )
                                     if n1_email:
                                         send_alert(f"Case {case_id} escalated to N+1.", via="email", recipient=n1_email)
                                     send_alert(f"Case {case_id} escalated to N+1.", via="teams")
-
-                            # Second row: Action / Owner / Owner Email
-                            e1, e2, e3 = st.columns([1.8, 1.2, 1.6])
-                            with e1: act  = st.text_input("Action Taken", row.get("action_taken",""), key=f"{prefix}_action")
-                            with e2: own  = st.text_input("Owner", row.get("owner",""), key=f"{prefix}_owner")
-                            with e3: mail = st.text_input("Owner Email", row.get("owner_email",""), key=f"{prefix}_email")
+                                    st.success("🚀 Escalated to N+1")
+                            with c3:
+                                if st.button("💾 Save", key=f"{prefix}_save"):
+                                    update_escalation_status(
+                                        case_id, new_status, action_taken, owner, owner_email
+                                    )
+                                    st.success("✅ Saved")
 
                             st.markdown("</div>", unsafe_allow_html=True)  # /controls-panel
                     except Exception as e:
@@ -782,11 +785,11 @@ if page == "📊 Main Dashboard":
                     crit = st.selectbox("Criticality", ["low","medium","high","urgent"], key=f"crit_{r['id']}")
                     notes= st.text_area("Notes", key=f"note_{r['id']}")
                     if st.button("Submit", key=f"btn_{r['id']}"):
-                        owner_email = r.get("owner_email", EMAIL_USER)
+                        owner_email_ = r.get("owner_email", EMAIL_USER)
                         update_escalation_status(r['id'], r.get("status","Open"),
                                                  r.get("action_taken",""), r.get("owner",""),
-                                                 owner_email, notes=notes, sentiment=sent, criticality=crit)
-                        if owner_email: send_alert("Feedback recorded on your case.", via="email", recipient=owner_email)
+                                                 owner_email_, notes=notes, sentiment=sent, criticality=crit)
+                        if owner_email_: send_alert("Feedback recorded on your case.", via="email", recipient=owner_email_)
                         st.success("Feedback saved.")
         if st.button("🔁 Retrain Model"):
             st.info("Retraining model…")
@@ -807,8 +810,13 @@ if page == "📊 Main Dashboard":
         st.subheader("ℹ️ How this Dashboard Works")
         st.markdown("""
 - **Kanban:** Open (🟧), In Progress (🔵), Resolved (🟩)
-- **Expander:** summary + age chip; soft **KPI panel** in two rows with a gap (Severity, Urgency, Criticality, Category, Sentiment, Likely)
-- **Controls in one row:** Status + Save + **N+1 Email + Escalate**, then Action/Owner/Owner Email.
+- **Expander layout inside each card:**
+  - Summary (no extra blank space) + Age chip
+  - **KPI panel** in **two rows** with **larger gap** (Severity, Urgency, Criticality, Category, Sentiment, Likely)
+  - **Controls**
+    - Row A: **Status + Dropdown + Action Taken**
+    - Row B: **Owner + Owner Email**
+    - Row C: **N+1 Email + Escalate + Save**
 - **Escalation View** includes **SLA Breach** (unresolved high-priority > 10 minutes).
 - **Likely to Escalate** uses the model (falls back to rules until enough data).
         """)
