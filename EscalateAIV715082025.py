@@ -38,6 +38,7 @@ except Exception:
 import difflib
 
 from dotenv import load_dotenv
+from enhancement_dashboard import show_enhancement_dashboard
 
 # --- BU/Region bucketizer ---
 try:
@@ -1062,10 +1063,11 @@ elif page == "🔥 SLA Heatmap":
     except Exception as e: st.error(f"❌ SLA Heatmap failed: {type(e).__name__}: {str(e)}")
 
 elif page == "🧠 Enhancements":
-    try: show_enhancement_dashboard()
+    try:
+        show_enhancement_dashboard()
     except Exception as e:
-        st.info("Enhancement dashboard not available.")
-        st.exception(e)
+        import streamlit as st
+        st.warning(f"Enhancement dashboard not available. ({type(e).__name__}: {e})")
 
 elif page == "⚙️ Admin Tools":
     def show_admin_panel():
