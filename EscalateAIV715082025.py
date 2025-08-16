@@ -2,14 +2,19 @@
 # --------------------------------------------------------------------
 # EscalateAI — Customer Escalation Prediction & Management Tool
 # This build includes:
-# • Sticky header (title stays fixed while you scroll)
-# • Compact case cards with an expander for details/actions
-# • Per-card N+1 Email input + "🚀 Escalate to N+1" button
-# • Sidebar WhatsApp + SMS (Twilio)
-# • Total Cases pill above columns; per-column counts in headers
-# • Robust duplicate detection (hash + TF-IDF + difflib fallback)
-# • Sidebar "📈 Advanced Analytics" + Help tab moved to last
-# • Kanban column colors: Orange=Open, Blue=In Progress, Green=Resolved
+# • Expander on SESICE ID (click case ID to open details)
+# • Removed "Resolve" button (use Status dropdown instead)
+# • Compact card layout; N+1 Email + "🚀 Escalate to N+1" side-by-side
+# • 3×2 metric grid showing exactly:
+#     📛 Severity -> value
+#     ⚡ Urgency -> value
+#     🎯 Criticality -> value
+#     📂 Category -> value
+#     💬 Sentiment -> value
+#     📈 Likely to Escalate -> value
+# • Sticky header, Kanban colors (Open=Orange, In Progress=Blue, Resolved=Green)
+# • WhatsApp + SMS (Twilio), search, robust dedupe (hash + TF-IDF + difflib)
+# • Advanced Analytics tab; Help moved last
 # --------------------------------------------------------------------
 
 # ======================
@@ -86,7 +91,7 @@ try:
     from advanced_enhancements import (
         predict_resolution_eta,
         show_shap_explanation,
-        detect_cosine_duplicates,  # not used; built-in dedup here
+        detect_cosine_duplicates,  # not used; built-in dedupe here
         link_email_threads,
         load_custom_plugins,
         send_whatsapp_message,
@@ -218,7 +223,7 @@ def get_next_escalation_id() -> str:
     return f"{ESCALATION_PREFIX}{str(next_num).zfill(5)}"
 
 def ensure_schema():
-    """Create/patch main table + dedup helper table."""
+    """Create/patch main table + dedupe helper table."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
@@ -713,27 +718,28 @@ st.markdown(
       .sticky-header {
         position: sticky; top: 0; z-index: 999;
         background: linear-gradient(135deg, #0ea5e9 0%, #7c3aed 100%);
-        padding: 14px 18px; border-radius: 0 0 16px 16px;
+        padding: 12px 16px; border-radius: 0 0 12px 12px;
         box-shadow: 0 8px 20px rgba(0,0,0,0.12);
       }
-      .sticky-header h1 { color: #fff; margin: 0; text-align: center; }
+      .sticky-header h1 { color: #fff; margin: 0; text-align: center; font-size: 20px; }
       .pill-total {
-        display:inline-block; padding:10px 16px; border-radius:999px;
+        display:inline-block; padding:8px 12px; border-radius:999px;
         background:linear-gradient(135deg,#1d4ed8 0%,#06b6d4 100%);
-        color:#fff; font-weight:700; box-shadow:0 6px 14px rgba(0,0,0,0.12);
+        color:#fff; font-weight:700; box-shadow:0 6px 14px rgba(0,0,0,0.12); font-size:13px;
       }
       .kanban-col h3 {
-        border-radius: 12px; padding: 10px 12px; color:#fff; text-align:center;
-        box-shadow: 0 8px 18px rgba(0,0,0,0.07); margin-bottom: 10px;
+        border-radius: 10px; padding: 8px 10px; color:#fff; text-align:center;
+        box-shadow: 0 6px 14px rgba(0,0,0,0.07); margin-bottom: 8px; font-size:14px;
       }
       .card {
-        background:#ffffff; border-radius:14px; padding:10px 12px; margin:8px 0 12px 0;
-        box-shadow:0 8px 22px rgba(0,0,0,0.06); border:1px solid rgba(0,0,0,0.05);
+        background:#ffffff; border-radius:12px; padding:8px 10px; margin:6px 0 10px 0;
+        box-shadow:0 6px 18px rgba(0,0,0,0.06); border:1px solid rgba(0,0,0,0.05);
       }
-      .badge { padding:6px 10px; border-radius:999px; color:#fff; font-size:12px; display:inline-block; text-align:center; }
-      .chip { display:inline-block; padding:6px 10px; border-radius:999px; background:#f3f4f6; margin-right:6px; font-size:12px; }
-      .age { padding:6px 10px; border-radius:8px; color:#fff; font-weight:600; text-align:center; }
-      .label { font-weight:700; color:#374151; margin-bottom:6px; }
+      .badge { padding:4px 8px; border-radius:999px; color:#fff; font-size:12px; display:inline-block; text-align:center; }
+      .chip { display:inline-block; padding:4px 8px; border-radius:999px; background:#f3f4f6; margin-right:6px; font-size:12px; }
+      .age { padding:4px 8px; border-radius:8px; color:#fff; font-weight:600; text-align:center; font-size:12px; }
+      .label { font-weight:700; color:#374151; margin-bottom:2px; font-size:12px; }
+      .small { font-size:12px; color:#4b5563; }
     </style>
     <div class="sticky-header">
         <h1>🚨 EscalateAI – AI Based Customer Escalation Prediction & Management Tool</h1>
@@ -986,24 +992,31 @@ if page == "📊 Main Dashboard":
 
                 for _, row in bucket.iterrows():
                     try:
-                        # Compact header
+                        # Compute compact values
+                        sentiment_val = (row.get("sentiment") or "neutral").lower()
+                        urgency_val = (row.get("urgency") or "normal").lower()
+                        severity_val = (row.get("severity") or "minor").lower()
+                        criticality_val = (row.get("criticality") or "medium").lower()
+                        likely_calc = predict_escalation(model_for_view, sentiment_val, urgency_val, severity_val, criticality_val)
+
+                        sev_color = SEVERITY_COLORS.get(severity_val, "#6b7280")
+                        urg_color = URGENCY_COLORS.get(urgency_val, "#6b7280")
+                        sent_color = {"negative": "#ef4444", "positive": "#22c55e", "neutral": "#f59e0b"}.get(sentiment_val, "#6b7280")
+                        escalate_color = "#dc2626" if likely_calc == "Yes" else "#6b7280"
+
+                        severity_cap = severity_val.capitalize()
+                        urgency_cap = "High" if urgency_val == "high" else "Normal"
+                        criticality_cap = criticality_val.capitalize()
+                        category_cap = (row.get("category") or "other").capitalize()
+                        sentiment_cap = sentiment_val.capitalize()
+                        likely_cap = likely_calc
+
                         summary = summarize_issue_text(row.get('issue', ''))
-                        sentiment = (row.get("sentiment") or "neutral").lower()
-                        urgency = (row.get("urgency") or "normal").lower()
-                        severity = (row.get("severity") or "minor").lower()
-                        criticality = (row.get("criticality") or "medium").lower()
-                        likely_to_escalate = predict_escalation(model_for_view, sentiment, urgency, severity, criticality)
-                        flag = "🚩" if likely_to_escalate == 'Yes' else ""
-                        title_line = f"**{row.get('id','N/A')} – {row.get('customer','Unknown')} {flag}** — {summary}"
+                        case_id = row.get('id','N/A')
+                        customer = row.get('customer','Unknown')
+                        flag = "🚩" if likely_calc == 'Yes' else ""
 
-                        sev_color = SEVERITY_COLORS.get(severity, "#6b7280")
-                        urg_color = URGENCY_COLORS.get(urgency, "#6b7280")
-                        sentiment_cap = (row.get("sentiment") or "neutral").capitalize()
-                        sent_color = {"Negative": "#ef4444", "Positive": "#22c55e", "Neutral": "#f59e0b"}.get(sentiment_cap, "#6b7280")
-                        escalate_color = "#dc2626" if likely_to_escalate == "Yes" else "#6b7280"
-                        category = (row.get("category") or "other").capitalize()
-                        criticality_cap = (row.get("criticality") or "medium").capitalize()
-
+                        # Age
                         try:
                             ts = pd.to_datetime(row.get("timestamp"))
                             now = datetime.datetime.now()
@@ -1019,81 +1032,76 @@ if page == "📊 Main Dashboard":
                             ageing_color = "#6b7280"
 
                         st.markdown("<div class='card'>", unsafe_allow_html=True)
-                        st.markdown(title_line)
 
-                        # Expander with details/actions
-                        with st.expander("Details & Actions", expanded=not compact_mode):
-                            # Row 1 badges
-                            b1, b2, b3 = st.columns(3)
-                            with b1:
-                                st.markdown("<div class='label'>📛 Severity</div>", unsafe_allow_html=True)
-                                st.markdown(f"<span class='badge' style='background:{sev_color};'>{severity.capitalize()}</span>", unsafe_allow_html=True)
-                            with b2:
-                                st.markdown("<div class='label'>⚡ Urgency</div>", unsafe_allow_html=True)
-                                st.markdown(f"<span class='badge' style='background:{urg_color};'>{urgency.capitalize()}</span>", unsafe_allow_html=True)
-                            with b3:
-                                st.markdown("<div class='label'>🎯 Criticality</div>", unsafe_allow_html=True)
+                        # --- Expander on SESICE ID ---
+                        with st.expander(f"🆔 {case_id}  —  {customer} {flag}", expanded=False):
+                            st.markdown(f"<div class='small'>{summary}</div>", unsafe_allow_html=True)
+                            st.markdown("&nbsp;", unsafe_allow_html=True)
+
+                            # 3×2 Metric Grid (exact label → value styling)
+                            g1, g2, g3 = st.columns(3)
+                            with g1:
+                                st.markdown("**📛 Severity**")
+                                st.markdown(f"<span class='badge' style='background:{sev_color};'>{severity_cap}</span>", unsafe_allow_html=True)
+                            with g2:
+                                st.markdown("**⚡ Urgency**")
+                                st.markdown(f"<span class='badge' style='background:{urg_color};'>{urgency_cap}</span>", unsafe_allow_html=True)
+                            with g3:
+                                st.markdown("**🎯 Criticality**")
                                 st.markdown(f"<span class='badge' style='background:#8b5cf6;'>{criticality_cap}</span>", unsafe_allow_html=True)
 
-                            # Row 2 badges
-                            c1, c2, c3 = st.columns(3)
-                            with c1:
-                                st.markdown("<div class='label'>📂 Category</div>", unsafe_allow_html=True)
-                                st.markdown(f"<span class='chip'>{category}</span>", unsafe_allow_html=True)
-                            with c2:
-                                st.markdown("<div class='label'>💬 Sentiment</div>", unsafe_allow_html=True)
+                            h1, h2, h3 = st.columns(3)
+                            with h1:
+                                st.markdown("**📂 Category**")
+                                st.markdown(f"<span class='chip'>{category_cap}</span>", unsafe_allow_html=True)
+                            with h2:
+                                st.markdown("**💬 Sentiment**")
                                 st.markdown(f"<span class='badge' style='background:{sent_color};'>{sentiment_cap}</span>", unsafe_allow_html=True)
-                            with c3:
-                                st.markdown("<div class='label'>📈 Likely to Escalate</div>", unsafe_allow_html=True)
-                                st.markdown(f"<span class='badge' style='background:{escalate_color};'>{likely_to_escalate}</span>", unsafe_allow_html=True)
+                            with h3:
+                                st.markdown("**📈 Likely to Escalate**")
+                                st.markdown(f"<span class='badge' style='background:{escalate_color};'>{likely_cap}</span>", unsafe_allow_html=True)
 
-                            # Row 3 fields
-                            prefix = f"case_{row.get('id', 'N/A')}"
-                            d1, d2, d3, d4 = st.columns([1.2, 1.8, 1.8, 1.4])
-                            with d1:
-                                st.markdown(f"<div class='age' style='background:{ageing_color};'>Age: {ageing_str}</div>", unsafe_allow_html=True)
-                            with d2:
+                            st.markdown("&nbsp;", unsafe_allow_html=True)
+
+                            # Editable fields (compact)
+                            prefix = f"case_{case_id}"
+                            r1, r2, r3, r4 = st.columns([1.1, 1.6, 1.2, 1.2])
+                            with r1:
+                                st.markdown(f"<span class='age' style='background:{ageing_color};'>Age: {ageing_str}</span>", unsafe_allow_html=True)
+                            with r2:
                                 new_action = st.text_input("Action Taken", row.get("action_taken", ""), key=f"{prefix}_action")
-                            with d3:
+                            with r3:
                                 new_owner = st.text_input("Owner", row.get("owner", ""), key=f"{prefix}_owner")
-                            with d4:
+                            with r4:
                                 new_owner_email = st.text_input("Owner Email", row.get("owner_email", ""), key=f"{prefix}_email")
 
-                            # Row 4 status + N+1 escalation
-                            e1, e2, e3, e4 = st.columns([1.1, 1.6, 1.2, 1.2])
-                            with e1:
+                            # Status + Save side-by-side
+                            s1, s2 = st.columns([1.4, 1.0])
+                            with s1:
                                 current_status = (row.get("status") or "Open").strip().title()
                                 new_status = st.selectbox(
                                     "Status", ["Open", "In Progress", "Resolved"],
                                     index=["Open", "In Progress", "Resolved"].index(current_status) if current_status in ["Open", "In Progress", "Resolved"] else 0,
                                     key=f"{prefix}_status"
                                 )
-                            with e2:
-                                n1_email = st.text_input("N+1 Email ID", key=f"{prefix}_n1")
-                            with e3:
+                            with s2:
                                 if st.button("💾 Save", key=f"{prefix}_save"):
-                                    update_escalation_status(row['id'], new_status, new_action, new_owner, new_owner_email)
+                                    update_escalation_status(case_id, new_status, new_action, new_owner, new_owner_email)
                                     st.success("✅ Saved")
-                            with e4:
+
+                            # N+1 email + escalate side-by-side
+                            n1a, n1b = st.columns([2.0, 1.0])
+                            with n1a:
+                                n1_email = st.text_input("N+1 Email ID", key=f"{prefix}_n1")
+                            with n1b:
                                 if st.button("🚀 Escalate to N+1", key=f"{prefix}_n1btn"):
-                                    update_escalation_status(row['id'], row.get("status", "Open"),
+                                    update_escalation_status(case_id, row.get("status", "Open"),
                                                              new_action or row.get("action_taken", ""),
                                                              new_owner or row.get("owner", ""),
                                                              n1_email)
                                     if n1_email:
-                                        send_alert(f"Case {row['id']} escalated to N+1.", via="email", recipient=n1_email)
-                                    send_alert(f"Case {row['id']} escalated to N+1.", via="teams")
-
-                            # Row 5 resolve quick
-                            if st.button("✔️ Resolve", key=f"{prefix}_resolved"):
-                                owner_email = new_owner_email or row.get("owner_email", EMAIL_USER)
-                                update_escalation_status(row['id'], "Resolved",
-                                                         new_action or row.get("action_taken", ""),
-                                                         new_owner or row.get("owner", ""),
-                                                         owner_email)
-                                if owner_email:
-                                    send_alert(f"Case {row['id']} marked as Resolved.", via="email", recipient=owner_email)
-                                send_alert(f"Case {row['id']} marked as Resolved.", via="teams")
+                                        send_alert(f"Case {case_id} escalated to N+1.", via="email", recipient=n1_email)
+                                    send_alert(f"Case {case_id} escalated to N+1.", via="teams")
 
                         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1169,8 +1177,8 @@ if page == "📊 Main Dashboard":
         st.markdown("""
 **What you see**
 - **Kanban Board** split into **Open**, **In Progress**, **Resolved** columns.  
-- Cards are compact; click **Details & Actions** to expand.  
-- Each card shows **Severity**, **Urgency**, **Criticality**, **Category**, **Sentiment**, **Age**, and **Likely to Escalate**.
+- Click the **SESICE ID** row to expand a case.  
+- Inside: **Action Taken**, **Owner**, **Owner Email**, **Status**, **N+1 email + Escalate**.
 
 **How "Likely to Escalate" is computed**
 - If a trained model exists, it predicts using: `sentiment`, `urgency`, `severity`, `criticality`.  
@@ -1186,14 +1194,7 @@ if page == "📊 Main Dashboard":
 
 **Per-card actions**
 - **💾 Save** — updates Status, Action Taken, Owner, Owner Email.  
-- **🚀 Escalate to N+1** — sends update to the typed N+1 email (Records owner_email & notifies).  
-- **✔️ Resolve** — marks resolved and notifies owner via Email/Teams.
-
-**Colors**
-- Column headers: **Orange=Open**, **Blue=In Progress**, **Green=Resolved**  
-- Severity: critical=red, major=orange, minor=green  
-- Urgency: high=red, normal=green  
-- Likely badge: red if **Yes**, grey if **No**
+- **🚀 Escalate to N+1** — notifies the N+1 email and logs the update.
         """)
 
 elif page == "🔥 SLA Heatmap":
