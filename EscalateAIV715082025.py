@@ -452,6 +452,32 @@ st.markdown("""
 <div class="sticky-header"><h1>🚨 EscalateAI – AI Based Customer Escalation Prediction & Management Tool</h1></div>
 """, unsafe_allow_html=True)
 
+st.markdown("""
+<style>
+  /* Bigger space between KPI rows */
+  .kpi-gap{height:22px;}
+
+  /* Remove the faint/dashed panel border under the issue (controls area) */
+  .controls-panel{
+    background:#ffffff;
+    border:0;                    /* <-- no border */
+    border-radius:12px;
+    padding:10px 0 2px 0;        /* keep layout tight */
+    margin:6px 0 2px 0;
+  }
+
+  /* Uniform label styling for all inputs/dropdowns */
+  div[data-testid="stTextInput"]  label,
+  div[data-testid="stSelectbox"]  label,
+  div[data-testid="stTextArea"]   label {
+    font-size:13px;
+    font-weight:600;
+    color:#475569;
+    margin-bottom:4px;
+  }
+</style>
+""", unsafe_allow_html=True)
+
 # Sidebar navigation
 st.sidebar.title("🔍 Navigation")
 page = st.sidebar.radio("Go to", ["📊 Main Dashboard","📈 Advanced Analytics","🔥 SLA Heatmap","🧠 Enhancements","⚙️ Admin Tools"])
@@ -677,62 +703,94 @@ if page == "📊 Main Dashboard":
                             with r0b:
                                 st.markdown(f"<div style='text-align:right;'><span class='age' style='background:{age_col};'>Age: {age_str}</span></div>", unsafe_allow_html=True)
 
-                            # --- KPI PANEL (two rows with bigger gap) ---
+                            # --- KPI PANEL (two rows with larger gap, no extra space above) ---
                             st.markdown("<div class='kpi-panel'>", unsafe_allow_html=True)
+                            
                             ka1, ka2, ka3 = st.columns(3)
                             with ka1:
-                                st.markdown(f"<div class='kv'>📛 <b>Severity</b> <span class='tag-pill' style='--c:{sev_color}; border-color:{sev_color}; color:{sev_color};'>{sv.capitalize()}</span></div>", unsafe_allow_html=True)
+                                st.markdown(
+                                    f"<div class='kv'>📛 <b>Severity</b> "
+                                    f"<span class='tag-pill' style='--c:{sev_color}; border-color:{sev_color}; color:{sev_color};'>{sv.capitalize()}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
                             with ka2:
-                                st.markdown(f"<div class='kv'>⚡ <b>Urgency</b> <span class='tag-pill' style='--c:{urg_color}; border-color:{urg_color}; color:{urg_color};'>{'High' if u=='high' else 'Normal'}</span></div>", unsafe_allow_html=True)
+                                st.markdown(
+                                    f"<div class='kv'>⚡ <b>Urgency</b> "
+                                    f"<span class='tag-pill' style='--c:{urg_color}; border-color:{urg_color}; color:{urg_color};'>{'High' if u=='high' else 'Normal'}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
                             with ka3:
-                                st.markdown(f"<div class='kv'>🎯 <b>Criticality</b> <span class='tag-pill' style='--c:#8b5cf6; border-color:#8b5cf6; color:#8b5cf6;'>{cr.capitalize()}</span></div>", unsafe_allow_html=True)
-
-                            # BIGGER gap between KPI rows
+                                st.markdown(
+                                    f"<div class='kv'>🎯 <b>Criticality</b> "
+                                    f"<span class='tag-pill' style='--c:#8b5cf6; border-color:#8b5cf6; color:#8b5cf6;'>{cr.capitalize()}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
+                            
+                            # Larger gap between KPI rows
                             st.markdown("<div class='kpi-gap'></div>", unsafe_allow_html=True)
-
+                            
                             kb1, kb2, kb3 = st.columns(3)
                             with kb1:
-                                st.markdown(f"<div class='kv'>📂 <b>Category</b> <span class='tag-pill'>{(row.get('category') or 'other').capitalize()}</span></div>", unsafe_allow_html=True)
+                                st.markdown(
+                                    f"<div class='kv'>📂 <b>Category</b> "
+                                    f"<span class='tag-pill'>{(row.get('category') or 'other').capitalize()}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
                             with kb2:
-                                st.markdown(f"<div class='kv'>💬 <b>Sentiment</b> <span class='tag-pill' style='--c:{sent_color}; border-color:{sent_color}; color:{sent_color};'>{s.capitalize()}</span></div>", unsafe_allow_html=True)
+                                st.markdown(
+                                    f"<div class='kv'>💬 <b>Sentiment</b> "
+                                    f"<span class='tag-pill' style='--c:{sent_color}; border-color:{sent_color}; color:{sent_color};'>{s.capitalize()}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
                             with kb3:
-                                st.markdown(f"<div class='kv'>📈 <b>Likely</b> <span class='tag-pill' style='--c:{esc_color}; border-color:{esc_color}; color:{esc_color};'>{likely}</span></div>", unsafe_allow_html=True)
+                                st.markdown(
+                                    f"<div class='kv'>📈 <b>Likely</b> "
+                                    f"<span class='tag-pill' style='--c:{esc_color}; border-color:{esc_color}; color:{esc_color};'>{likely}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
                             st.markdown("</div>", unsafe_allow_html=True)  # /kpi-panel
-
-                            # Divider then controls panel
-                            st.markdown("<hr class='soft-hr' />", unsafe_allow_html=True)
+                            
+                            # (Removed the <hr class='soft-hr'/> line to eliminate the transparent separator)
+                            
+                            # ---------- CONTROLS (3 tidy rows) ----------
                             st.markdown("<div class='controls-panel'>", unsafe_allow_html=True)
-
                             prefix = f"case_{case_id}"
-
+                            
                             # Row A: Status label | Status dropdown | Action Taken
                             a1, a2, a3 = st.columns([0.35, 1.1, 2.1])
                             with a1:
                                 st.markdown("<div class='field-label-inline'>Status</div>", unsafe_allow_html=True)
                             with a2:
-                                cur = (row.get("status") or "Open").strip().title()
+                                current_status = (row.get("status") or "Open").strip().title()
                                 new_status = st.selectbox(
                                     label="",
                                     options=["Open","In Progress","Resolved"],
-                                    index=["Open","In Progress","Resolved"].index(cur) if cur in ["Open","In Progress","Resolved"] else 0,
+                                    index=["Open","In Progress","Resolved"].index(current_status) if current_status in ["Open","In Progress","Resolved"] else 0,
                                     key=f"{prefix}_status",
                                     label_visibility="collapsed",
                                 )
                             with a3:
                                 action_taken = st.text_input("Action Taken", row.get("action_taken",""), key=f"{prefix}_action")
-
+                            
                             # Row B: Owner | Owner Email
                             b1, b2 = st.columns(2)
                             with b1:
                                 owner = st.text_input("Owner", row.get("owner",""), key=f"{prefix}_owner")
                             with b2:
                                 owner_email = st.text_input("Owner Email", row.get("owner_email",""), key=f"{prefix}_email")
-
-                            # Row C: N+1 Email | Escalate to N+1 | Save
-                            c1, c2, c3 = st.columns([1.6, 0.9, 0.9])
+                            
+                            # Row C: Save (left) | N+1 Email | Escalate to N+1 (right)
+                            c1, c2, c3 = st.columns([0.9, 1.6, 0.95])
+                            
                             with c1:
-                                n1_email = st.text_input("N+1 Email ID", key=f"{prefix}_n1")
+                                if st.button("💾 Save", key=f"{prefix}_save"):
+                                    update_escalation_status(case_id, new_status, action_taken, owner, owner_email)
+                                    st.success("✅ Saved")
+                            
                             with c2:
+                                n1_email = st.text_input("N+1 Email ID", key=f"{prefix}_n1")
+                            
+                            with c3:
                                 if st.button("🚀 Escalate to N+1", key=f"{prefix}_n1btn"):
                                     update_escalation_status(
                                         case_id, new_status,
@@ -744,13 +802,7 @@ if page == "📊 Main Dashboard":
                                         send_alert(f"Case {case_id} escalated to N+1.", via="email", recipient=n1_email)
                                     send_alert(f"Case {case_id} escalated to N+1.", via="teams")
                                     st.success("🚀 Escalated to N+1")
-                            with c3:
-                                if st.button("💾 Save", key=f"{prefix}_save"):
-                                    update_escalation_status(
-                                        case_id, new_status, action_taken, owner, owner_email
-                                    )
-                                    st.success("✅ Saved")
-
+                            
                             st.markdown("</div>", unsafe_allow_html=True)  # /controls-panel
                     except Exception as e:
                         st.error(f"Error rendering case #{row.get('id','Unknown')}: {e}")
