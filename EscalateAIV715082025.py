@@ -3,8 +3,11 @@
 # EscalateAI — Customer Escalation Prediction & Management Tool
 # --------------------------------------------------------------------
 # What’s in this build:
+# • Fix: Reset now clears BOTH data & de-dup memory (processed_hashes + in-memory cache)
+# • _processed_hash_exists() hardened (no table -> treat as not processed)
 # • Sidebar: 👨‍💻 Developer section (Force Rerun, Clear State & Rerun)
-# • Sidebar Extras/Dev: Daily Email, View Raw DB, Reset DB (Dev Only)
+# • Sidebar Extras/Dev: Daily Email, View Raw DB, Reset DB (Dev Only),
+#   and 🧽 Clear De-dup Memory Only
 # • Main Dashboard: BU & Region filters (top row, alongside Search)
 # • Expander: Clean compact card (no BU/Region chips inside)
 # • Top bar: Total pill shown BEFORE the SLA breach pill
@@ -197,9 +200,25 @@ def ensure_schema():
         except Exception: pass
 
 def _processed_hash_exists(h: str) -> bool:
-    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
-    cur.execute("SELECT 1 FROM processed_hashes WHERE hash=? LIMIT 1",(h,))
-    row = cur.fetchone(); conn.close(); return row is not None
+    """Return True if hash already recorded in processed_hashes. If table is missing, return False."""
+    import sqlite3
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM processed_hashes WHERE hash=? LIMIT 1", (h,))
+        row = cur.fetchone()
+        return row is not None
+    except sqlite3.OperationalError:
+        # processed_hashes table doesn't exist yet — treat as not processed
+        return False
+    except Exception:
+        return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def _mark_processed_hash(h: str):
     try:
@@ -652,13 +671,42 @@ if st.sidebar.button("Send Daily Email"):
 if st.sidebar.checkbox("🧪 View Raw Database"):
     st.sidebar.dataframe(fetch_escalations())
 
+# 🔧 NEW: Clear only de-dup memory (keep data)
+if st.sidebar.button("🧽 Clear De-dup Memory Only"):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM processed_hashes")
+        conn.commit()
+    finally:
+        try: conn.close()
+        except Exception: pass
+    global_seen_hashes.clear()
+    st.sidebar.success("🧽 De-dup memory cleared. You can re-import the same file now.")
+
+# 🔧 Reset DB + de-dup memory (fixes duplicates-after-reset)
 if st.sidebar.button("🗑️ Reset Database (Dev Only)"):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("DROP TABLE IF EXISTS escalations")
-    conn.commit()
-    conn.close()
-    st.sidebar.warning("Database reset. Please restart the app.")
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        # Drop both data and de-dup tables
+        cur.executescript("""
+            DROP TABLE IF EXISTS escalations;
+            DROP TABLE IF EXISTS processed_hashes;
+        """)
+        conn.commit()
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    # Clear in-memory hash cache used by email polling
+    global_seen_hashes.clear()
+
+    # Re-create fresh schema so the app continues without a manual restart
+    ensure_schema()
+
+    st.sidebar.success("✅ Database & de-dup memory fully reset.")
+    st.rerun()
 
 # Helpers
 def filter_df_by_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
