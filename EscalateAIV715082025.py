@@ -489,6 +489,35 @@ st.markdown("""
   .kpi-panel{ margin-top:0 !important; }
 </style>
 """, unsafe_allow_html=True)
+# Paste this AFTER your existing <style> block — it removes the faint/transparent bar
+# that shows up right under the issue text (above the KPI chips).
+
+st.markdown("""
+<style>
+  /* Make the KPI panel start flush under the issue and remove any bar-like styling */
+  .kpi-panel{
+    margin-top:0 !important;
+    background:transparent !important;   /* no light panel background */
+    border:0 !important;                 /* no border line that looks like a bar */
+    box-shadow:none !important;          /* no shadow that can read as a bar */
+    padding-top:0 !important;
+  }
+
+  /* Hide any <hr> that Streamlit or markdown may inject in that spot */
+  details[data-testid="stExpander"] hr,
+  div[data-testid="stMarkdownContainer"] hr{
+    display:none !important;
+    height:0 !important;
+    margin:0 !important;
+    border:0 !important;
+    padding:0 !important;
+  }
+
+  /* Consistent spacing: small gap below the issue, larger gap between KPI rows */
+  .summary{ margin-bottom:6px !important; }
+  .kpi-gap{ height:22px !important; }
+</style>
+""", unsafe_allow_html=True)
 
 
 # Sidebar navigation
