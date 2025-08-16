@@ -25,11 +25,11 @@ import pandas as pd
 
 # ------------------------- BU definitions -------------------------
 BU_MAP = [
-    ("PP",   "Low Voltage Products & Systems"),
-    ("PS",   "Medium Voltage Distribution & Grid Automation"),
-    ("IA",   "Industrial Automation & Control"),
+    ("PPIBS",   "Low Voltage Products & Systems"),
+    ("PSIBS",   "Medium Voltage Distribution & Grid Automation"),
+    ("IDIBS",   "Industrial Automation & Control"),
     ("BMS",  "Building Automation & Control"),
-    ("SP",   "Critical Power, Cooling & Racks"),
+    ("SPIBS",   "Critical Power, Cooling & Racks"),
     ("H&D",  "Residential & Small Business"),
     ("A2E",  "Access to Energy"),
     ("Solar","Solar & Energy Storage"),
@@ -41,7 +41,7 @@ _ALIAS_BU = {"HD": "H&D", "H&D": "H&D"}
 # BU keyword rules (ordered, most specific first)
 _BU_RULES = [
     # Secure Power
-    ("SP",   r"\b(apc|smart[-\s]?ups|easy\s*ups|symmetra|galaxy\b|netshelter|netbotz|"
+    ("SP",   r"\b(apc|smart[-\s]?ups|easy\s*ups|symmetra|galaxy\b|netshelter|netbotz|LIB|cooling|uniflair|Condensor|gvx|compressor\battery|Upss|chiller|pump|compressor|"
              r"rpdus?|rack\s*pdu|uniflair|inrow|micro\s*data\s*center|ecostruxure\s*it)\b"),
     # Building Management
     ("BMS",  r"\b(bms\b|building\s*management\s*system|ecostruxure\s*building\s*(operation|expert)|"
@@ -52,7 +52,7 @@ _BU_RULES = [
              r"altivar|atv\d+|lexium|pacdrive|harmony|magelis|"
              r"(plc|pac|scada|dcs)\b|triconex|foxboro|safety\s*instrumented\s*system|iiot)\b"),
     # Medium Voltage / Grid
-    ("PS",   r"\b(medium[\s-]?voltage|mv\b|airset|rm6|sm6|premset|pix\b|"
+    ("PS",   r"\b(medium[\s-]?voltage|mv\b|airset|rm6|sm6|premset|pix\b|gis|hwx|hvx|vmx|transformer|trihal|easypact|micom|easergy|vamp|sensor|relay"
              r"easergy(\s*p[35])?|t300\b|ring\s*main\s*unit|rmu[s]?|"
              r"(adms|derms)\b|substation\s*automation|grid\s*(monitoring|control|automation))\b"),
     # Low Voltage / Power Products
