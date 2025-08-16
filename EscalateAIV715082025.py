@@ -38,7 +38,57 @@ except Exception:
 import difflib
 
 from dotenv import load_dotenv
-from enhancement_dashboard import show_enhancement_dashboard
+
+# ==== Admin helpers wiring (place right after imports) =======================
+import importlib.util as _impspec
+
+# Try normal import first
+try:
+    from advanced_enhancements import (
+        validate_escalation_schema,
+        ensure_audit_log_table,
+        log_escalation_action,
+        send_whatsapp_message as _ae_send_whatsapp_message,  # optional
+    )
+except Exception as _imp_err:
+    # Try path import from same directory
+    try:
+        _here = os.path.dirname(os.path.abspath(__file__))
+        _ae_path = os.path.join(_here, "advanced_enhancements.py")
+        if os.path.exists(_ae_path):
+            _spec = _impspec.spec_from_file_location("advanced_enhancements", _ae_path)
+            _ae = _impspec.module_from_spec(_spec)
+            _spec.loader.exec_module(_ae)  # type: ignore
+            validate_escalation_schema = getattr(_ae, "validate_escalation_schema")
+            ensure_audit_log_table     = getattr(_ae, "ensure_audit_log_table")
+            log_escalation_action      = getattr(_ae, "log_escalation_action")
+            _ae_send_whatsapp_message  = getattr(_ae, "send_whatsapp_message", None)
+        else:
+            raise FileNotFoundError(f"advanced_enhancements.py not found at {_ae_path}")
+    except Exception as _path_err:
+        # Final fallbacks so UI keeps working
+        def validate_escalation_schema(*a, **k): return (True, [f"(fallback) advanced_enhancements import failed: {_imp_err} / {_path_err}"])
+        def ensure_audit_log_table(*a, **k): pass
+        def log_escalation_action(*a, **k): pass
+        _ae_send_whatsapp_message = None
+
+# Safe accessor for WhatsApp sender (avoid NameError on reference)
+def _safe_send_whatsapp(phone, message):
+    fn = _ae_send_whatsapp_message
+    if fn is None:
+        return False
+    try:
+        return bool(fn(phone, message))
+    except Exception:
+        return False
+# ============================================================================
+
+# Enhancement dashboard import (guarded)
+try:
+    from enhancement_dashboard import show_enhancement_dashboard
+except Exception:
+    def show_enhancement_dashboard():
+        st.info("Enhancement dashboard not available.")
 
 # --- BU/Region bucketizer ---
 try:
@@ -69,13 +119,6 @@ except Exception:
     def show_filter_summary(*a, **k): pass
     def summarize_escalations(): return "No summary available."
     def schedule_weekly_retraining(): pass
-
-#try:
-    from enhancement_dashboard import show_enhancement_dashboard
-except Exception:
-    def show_enhancement_dashboard():
-        st.info("Enhancement dashboard not available.")
-
 
 # ---------------- Quick analytics view ----------------
 def show_analytics_view():
@@ -443,7 +486,7 @@ st.markdown("""
   details[data-testid="stExpander"] > summary{padding:8px 10px;font-weight:700;}
   details[data-testid="stExpander"] > div[role="region"]{padding:8px 10px 10px 10px;}
 
-  div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"]{gap:.25rem !important;}
+  div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"]{gap=.25rem !important;}
 
   .age{padding:4px 8px;border-radius:8px;color:#fff;font-weight:600;text-align:center;font-size:12px;}
   .summary{font-size:15px;color:#0f172a;margin-bottom:6px;}
@@ -494,9 +537,7 @@ st.markdown("""
   }
 
   .controls-panel .stButton>button{
-    height:40px !important;
-    border-radius:10px !important;
-    padding:0 14px !important;
+    height:40px !important; border-radius:10px !important; padding:0 14px !important;
   }
 
   /* Smaller search input */
@@ -592,12 +633,8 @@ if not df_res.empty:
     c1, c2 = st.sidebar.columns(2)
     with c1:
         if st.sidebar.button("Send WhatsApp"):
-            try:
-                # send_whatsapp_message available from advanced_enhancements (if configured)
-                ok = send_whatsapp_message(phone, msg) if callable(send_whatsapp_message) else False
-                st.sidebar.success(f"✅ WhatsApp sent to {phone}") if ok else st.sidebar.error("❌ WhatsApp API failure")
-            except Exception as e:
-                st.sidebar.error(f"❌ WhatsApp send failed: {e}")
+            ok = _safe_send_whatsapp(phone, msg)
+            st.sidebar.success(f"✅ WhatsApp sent to {phone}") if ok else st.sidebar.error("❌ WhatsApp API failure")
     with c2:
         if st.sidebar.button("Send SMS"):
             st.sidebar.success(f"✅ SMS sent to {phone}") if send_sms(phone, msg) else None
@@ -1036,7 +1073,7 @@ elif page == "📈 BU & Region Trends":
 
         # Trend over time per BU
         if "timestamp" in df.columns:
-            df["date"] = pd.to_datetime(df["timestamp"], errors="coerce").dt.date
+            df["date"] = pd.to_datetime(df["timestamp"], errors='coerce').dt.date
             t_bu = df.groupby(["date", df["bu_code"].astype(str).str.upper()]).size().reset_index(name="Count")
             t_bu["bu_code"] = t_bu["bu_code"].replace({"SP":"SPIBS","PP":"PPIBS","PS":"PSIBS","IA":"IDIBS"})
             ch_t_bu = alt.Chart(t_bu).mark_line(point=True).encode(
@@ -1066,19 +1103,29 @@ elif page == "🧠 Enhancements":
     try:
         show_enhancement_dashboard()
     except Exception as e:
-        import streamlit as st
         st.warning(f"Enhancement dashboard not available. ({type(e).__name__}: {e})")
 
 elif page == "⚙️ Admin Tools":
     def show_admin_panel():
         st.title("⚙️ Admin Tools")
         if st.button("🔍 Validate DB Schema"):
-            try: validate_escalation_schema(); st.success("✅ Schema validated and healed.")
-            except Exception as e: st.error(f"❌ Schema validation failed: {e}")
+            try:
+                ok, msgs = validate_escalation_schema()
+                st.success("✅ Schema validated and healed." if ok else "⚠️ Schema checked with warnings.")
+                if msgs:
+                    with st.expander("Details"):
+                        for m in msgs:
+                            st.write("- " + str(m))
+            except Exception as e:
+                st.error(f"❌ Schema validation failed: {e}")
         st.subheader("📄 Audit Log Preview")
         try:
+            # ensure audit table before writing
+            ensure_audit_log_table()
             log_escalation_action("init","N/A","system","Initializing audit log table")
-            conn = sqlite3.connect("escalations.db"); df = pd.read_sql("SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT 100", conn); conn.close()
+            conn = sqlite3.connect(DB_PATH)
+            df = pd.read_sql("SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT 100", conn)
+            conn.close()
             st.dataframe(df)
         except Exception as e:
             st.warning("⚠️ Audit log not available."); st.exception(e)
