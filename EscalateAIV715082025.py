@@ -3,19 +3,12 @@
 # EscalateAI — Customer Escalation Prediction & Management Tool
 # (Full app with BU & Region bucketization via external module)
 # --------------------------------------------------------------------
-# Key features:
-# • Sticky title (doesn't scroll)
-# • Search + Kanban with colored headers (Open=Orange, In Progress=Blue, Resolved=Green)
-# • Compact expander: issue summary (larger), age chip, KPI panel in 2 rows
-# • Uniform labels/inputs; no faint/transparent bars
-# • Controls layout:
-#     Row A: Status (select) + Action Taken
-#     Row B: Owner + Owner Email
-#     Row C: Save (left) + N+1 Email ID + Escalate to N+1 (right)
-# • WhatsApp + SMS (Twilio) alerts; email polling; daily summary email
-# • Robust duplicate detection (hash + TF-IDF/difflib)
-# • BU & Region classification (via bu_region_bucketizer.py)
-# • Filters (Status/Severity/Sentiment/Category/BU/Region) + "SLA Breach" view
+# What’s new in this version:
+# • Sidebar: 👨‍💻 Developer section with “Force Rerun” and “Clear State & Rerun”
+# • Main Dashboard: BU & Region filters added (top of the page, near search)
+# • Expander: Removed BU/Region chips (kept the clean summary + KPIs + controls)
+# • Top bar: Added a Total pill BEFORE the SLA breach pill (as requested)
+# • Preserves: sticky title, compact expander, de-dup, email/SMS/Teams, analytics
 # --------------------------------------------------------------------
 
 import os, re, time, datetime, threading, hashlib, sqlite3, smtplib, requests, imaplib, email, traceback
@@ -485,6 +478,7 @@ st.markdown("""
   .aisum{background:#0b1220;color:#e5f2ff;padding:10px 12px;border-radius:10px;
          box-shadow:0 6px 14px rgba(0,0,0,.10);font-size:13px;}
   .sla-pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#ef4444;color:#fff;font-weight:600;font-size:12px;}
+  .total-pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#334155;color:#fff;font-weight:600;font-size:12px;margin-right:8px;}
 
   .controls-panel{ background:#fff; border:0; border-radius:12px; padding:10px 0 2px 0; margin:6px 0 2px 0; }
 
@@ -575,14 +569,15 @@ if st.sidebar.button("Trigger SLA Check"):
             send_alert(msg, via="teams"); send_alert(msg, via="email"); st.sidebar.success("✅ Alerts sent")
         else: st.sidebar.info("All SLAs healthy")
 
-# Sidebar: filters
+# Sidebar: filters (we keep core filters here; BU/Region are added to Main too)
 st.sidebar.markdown("### 🔍 Escalation Filters")
 status_opt    = st.sidebar.selectbox("Status",   ["All","Open","In Progress","Resolved"], index=0)
 severity_opt  = st.sidebar.selectbox("Severity", ["All","minor","major","critical"], index=0)
 sentiment_opt = st.sidebar.selectbox("Sentiment",["All","positive","neutral","negative"], index=0)
 category_opt  = st.sidebar.selectbox("Category", ["All","technical","support","dissatisfaction","safety","business","other"], index=0)
-bu_opt        = st.sidebar.selectbox("BU",       ["All","PP","PS","IA","BMS","SP","H&D","A2E","Solar","OTHER"], index=0)
-region_opt    = st.sidebar.selectbox("Region",   ["All","North","East","South","West","NC","Others"], index=0)
+# (BU/Region filters also added on Main Dashboard; we still leave sidebar versions if you want both)
+bu_opt_sidebar     = st.sidebar.selectbox("BU (Sidebar)",       ["All","PP","PS","IA","BMS","SP","H&D","A2E","Solar","OTHER"], index=0)
+region_opt_sidebar = st.sidebar.selectbox("Region (Sidebar)",   ["All","North","East","South","West","NC","Others"], index=0)
 
 # Sidebar: notifications
 st.sidebar.markdown("### 📲 WhatsApp & SMS Alerts")
@@ -623,11 +618,25 @@ with cr:
             with open(out,"rb") as f: st.sidebar.download_button("Download Excel", f, file_name=out,
                                                          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh", value=False)
-refresh_interval = st.sidebar.slider("Refresh Interval (sec)", 10, 60, 30)
-compact_mode = st.sidebar.checkbox("📱 Extra-Compact Mode", value=True)
+# Sidebar: refresh / developer
+st.sidebar.markdown("### 🔄 Refresh")
+auto_refresh = st.sidebar.checkbox("Auto Refresh", value=False)
+refresh_interval = st.sidebar.slider("Interval (sec)", 10, 60, 30)
 if auto_refresh: time.sleep(refresh_interval); st.rerun()
-if st.sidebar.button("🔁 Manual Refresh"): st.rerun()
+if st.sidebar.button("Manual Refresh"): st.rerun()
+
+st.sidebar.markdown("### 👨‍💻 Developer")
+dev_c1, dev_c2 = st.sidebar.columns(2)
+with dev_c1:
+    if st.button("♻️ Force Rerun"):
+        st.rerun()
+with dev_c2:
+    if st.button("🧹 Clear State & Rerun"):
+        for k in list(st.session_state.keys()):
+            if k not in ['email_thread','daily_email_thread']:
+                del st.session_state[k]
+        st.rerun()
+
 if st.sidebar.checkbox("🌙 Dark Mode"):
     try: apply_dark_mode()
     except Exception: pass
@@ -653,8 +662,8 @@ if page == "📊 Main Dashboard":
     with tabs[0]:
         st.subheader("📊 Escalation Kanban Board — All Cases")
 
-        # Top bar: Search + SLA + AI summary (kept above for live filtering)
-        t1, t2, t3 = st.columns([0.6, 0.15, 0.25])
+        # Top bar row: Search (left) | Total + SLA (mid) | AI summary (right)
+        t1, t2, t3 = st.columns([0.55, 0.2, 0.25])
         with t1:
             q = st.text_input("🔎 Search cases", placeholder="ID, customer, issue, owner, email, status, BU, region…")
         with t2:
@@ -665,23 +674,44 @@ if page == "📊 Main Dashboard":
                 & (_df['priority'].astype(str).str.lower()=='high')
                 & ((datetime.datetime.now()-_df['timestamp']) > datetime.timedelta(minutes=10))
             ]
-            st.markdown(f"<span class='sla-pill'>⏱️ {len(sla_breaches)} SLA breach(s)</span>", unsafe_allow_html=True)
+            total_count = len(df_all)
+            st.markdown(
+                f"<span class='total-pill'>📦 Total: {total_count}</span>"
+                f"<span class='sla-pill'>⏱️ {len(sla_breaches)} SLA breach(s)</span>",
+                unsafe_allow_html=True
+            )
         with t3:
             try: ai_text = summarize_escalations()
             except Exception: ai_text = "Summary unavailable."
             st.markdown(f"<div class='aisum'><b>🧠 AI Summary</b><br>{ai_text}</div>", unsafe_allow_html=True)
 
-        # Escalation View control (includes SLA Breach)
+        # View control
         view_radio = st.radio("Escalation View", ["All", "Likely to Escalate", "Not Likely", "SLA Breach"], horizontal=True)
 
-        # Apply sidebar filters first (hardened with astype(str))
+        # NEW: BU & Region filters on Main Dashboard
+        md1, md2 = st.columns(2)
+        # Build choices dynamically but include standard defaults
+        known_bu = ["PP","PS","IA","BMS","SP","H&D","A2E","Solar","OTHER"]
+        bu_vals = sorted({*known_bu, *[str(x).upper() for x in df_all.get("bu_code", pd.Series([])).dropna().unique().tolist()]})
+        if "All" not in bu_vals: bu_vals = ["All"] + bu_vals
+        region_vals = ["All","North","East","South","West","NC","Others"]
+        with md1:
+            bu_opt_main = st.selectbox("BU (Main)", bu_vals, index=0, key="main_bu")
+        with md2:
+            region_opt_main = st.selectbox("Region (Main)", region_vals, index=0, key="main_region")
+
+        # Apply sidebar filters first
         filt = df_all.copy()
         if status_opt    != "All": filt = filt[filt["status"].astype(str).str.strip().str.title()==status_opt]
         if severity_opt  != "All": filt = filt[filt["severity"].astype(str).str.lower()==severity_opt.lower()]
         if sentiment_opt != "All": filt = filt[filt["sentiment"].astype(str).str.lower()==sentiment_opt.lower()]
         if category_opt  != "All": filt = filt[filt["category"].astype(str).str.lower()==category_opt.lower()]
-        if bu_opt        != "All": filt = filt[filt["bu_code"].fillna("OTHER").astype(str).str.upper()==bu_opt.upper()]
-        if region_opt    != "All": filt = filt[filt["region"].fillna("Others").astype(str).str.title()==region_opt.title()]
+        # Apply Sidebar BU/Region if used
+        if bu_opt_sidebar     != "All": filt = filt[filt["bu_code"].fillna("OTHER").astype(str).str.upper()==bu_opt_sidebar.upper()]
+        if region_opt_sidebar != "All": filt = filt[filt["region"].fillna("Others").astype(str).str.title()==region_opt_sidebar.title()]
+        # Apply Main Dashboard BU/Region too
+        if bu_opt_main     != "All": filt = filt[filt["bu_code"].fillna("OTHER").astype(str).str.upper()==bu_opt_main.upper()]
+        if region_opt_main != "All": filt = filt[filt["region"].fillna("Others").astype(str).str.title()==region_opt_main.title()]
 
         # Apply escalation view radio
         if view_radio == "SLA Breach":
@@ -750,15 +780,10 @@ if page == "📊 Main Dashboard":
                             age_str, age_col = "N/A", "#6b7280"
 
                         with st.expander(f"🆔 {case_id} — {customer} {flag}", expanded=False):
-                            # Summary + Age + BU/Region
+                            # Summary + Age (BU/Region tags removed as requested)
                             r0a, r0b = st.columns([0.75, 0.25])
                             with r0a:
                                 st.markdown(f"<div class='summary'>{summary}</div>", unsafe_allow_html=True)
-                                st.markdown(
-                                    f"<div style='margin-top:2px;'>"
-                                    f"<span class='tag-pill'>BU: {row.get('bu_code','OTHER')}</span> "
-                                    f"<span class='tag-pill'>Region: {row.get('region','Others')}</span>"
-                                    f"</div>", unsafe_allow_html=True)
                             with r0b:
                                 st.markdown(f"<div style='text-align:right;'><span class='age' style='background:{age_col};'>Age: {age_str}</span></div>", unsafe_allow_html=True)
 
@@ -785,14 +810,13 @@ if page == "📊 Main Dashboard":
                             st.markdown("<div class='controls-panel'>", unsafe_allow_html=True)
                             prefix = f"case_{case_id}"
 
-                            # Row A: Status (select) | Action Taken   (FIXED: no .str on plain string)
+                            # Row A: Status (select) | Action Taken   (SAFE: no .str on plain string)
                             ra1, ra2 = st.columns([1.0, 2.2])
                             with ra1:
                                 status_raw = row.get("status")
                                 current_status = str(status_raw).strip().title() if status_raw else "Open"
                                 if current_status not in ["Open", "In Progress", "Resolved"]:
                                     current_status = "Open"
-
                                 new_status = st.selectbox(
                                     "Status",
                                     ["Open", "In Progress", "Resolved"],
@@ -896,7 +920,7 @@ if page == "📊 Main Dashboard":
     - Row B: **Owner + Owner Email**
     - Row C: **Save** (left) + **N+1 Email** + **Escalate to N+1**
 - **Escalation View** includes **SLA Breach** (unresolved high-priority > 10 minutes).
-- **BU & Region** auto-detected from text + (Country/State/City when provided). Region buckets: **North / East / South / West / NC / Others**.
+- **BU & Region filters** now available on the **Main Dashboard** (top area).
         """)
 
 elif page == "🔥 SLA Heatmap":
