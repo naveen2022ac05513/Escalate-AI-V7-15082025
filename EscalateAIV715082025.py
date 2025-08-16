@@ -1,14 +1,16 @@
 # EscalateAI_main.py
 # --------------------------------------------------------------------
 # EscalateAI — Customer Escalation Prediction & Management Tool
-# (Full app with BU & Region bucketization via external module)
 # --------------------------------------------------------------------
-# What’s new in this version:
-# • Sidebar: 👨‍💻 Developer section with “Force Rerun” and “Clear State & Rerun”
-# • Main Dashboard: BU & Region filters added (top of the page, near search)
-# • Expander: Removed BU/Region chips (kept the clean summary + KPIs + controls)
-# • Top bar: Added a Total pill BEFORE the SLA breach pill (as requested)
-# • Preserves: sticky title, compact expander, de-dup, email/SMS/Teams, analytics
+# What’s in this build:
+# • Sidebar: 👨‍💻 Developer section (Force Rerun, Clear State & Rerun)
+# • Sidebar Extras/Dev: Daily Email, View Raw DB, Reset DB (Dev Only)
+# • Main Dashboard: BU & Region filters (top row, alongside Search)
+# • Expander: Clean compact card (no BU/Region chips inside)
+# • Top bar: Total pill shown BEFORE the SLA breach pill
+# • Robust .astype(str) before any .str usage to avoid errors
+# • BU/Region auto-classification (via bu_region_bucketizer.py)
+# • De-duplication, email/SMS/Teams alerts, quick analytics
 # --------------------------------------------------------------------
 
 import os, re, time, datetime, threading, hashlib, sqlite3, smtplib, requests, imaplib, email, traceback
@@ -280,7 +282,7 @@ def insert_escalation(
             status,timestamp,action_taken,owner,owner_email,escalated,priority,
             likely_to_escalate,action_owner,status_update_date,user_feedback,duplicate_of,
             country,state,city,bu_code,bu_name,region
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (  # 27 placeholders
             new_id, customer, issue, issue_hash, sentiment, urgency, severity, criticality, category,
             "Open", now, "", "", owner_email or "", escalation_flag, priority,
             likely_to_escalate, "", "", "", duplicate_of,
@@ -498,7 +500,7 @@ st.markdown("""
   }
   .controls-panel .stButton>button{height:40px !important; border-radius:10px !important; padding:0 14px !important;}
 
-  /* Hide any hr to avoid faint bars */
+  /* Hide hr to avoid faint bars */
   .soft-hr{display:none !important;}
   details[data-testid="stExpander"] hr,
   div[data-testid="stMarkdownContainer"] hr{ display:none !important; height:0 !important; margin:0 !important; border:0 !important; padding:0 !important; }
@@ -569,13 +571,12 @@ if st.sidebar.button("Trigger SLA Check"):
             send_alert(msg, via="teams"); send_alert(msg, via="email"); st.sidebar.success("✅ Alerts sent")
         else: st.sidebar.info("All SLAs healthy")
 
-# Sidebar: filters (we keep core filters here; BU/Region are added to Main too)
+# Sidebar: filters (core filters here; BU/Region also on Main)
 st.sidebar.markdown("### 🔍 Escalation Filters")
 status_opt    = st.sidebar.selectbox("Status",   ["All","Open","In Progress","Resolved"], index=0)
 severity_opt  = st.sidebar.selectbox("Severity", ["All","minor","major","critical"], index=0)
 sentiment_opt = st.sidebar.selectbox("Sentiment",["All","positive","neutral","negative"], index=0)
 category_opt  = st.sidebar.selectbox("Category", ["All","technical","support","dissatisfaction","safety","business","other"], index=0)
-# (BU/Region filters also added on Main Dashboard; we still leave sidebar versions if you want both)
 bu_opt_sidebar     = st.sidebar.selectbox("BU (Sidebar)",       ["All","PP","PS","IA","BMS","SP","H&D","A2E","Solar","OTHER"], index=0)
 region_opt_sidebar = st.sidebar.selectbox("Region (Sidebar)",   ["All","North","East","South","West","NC","Others"], index=0)
 
@@ -641,6 +642,24 @@ if st.sidebar.checkbox("🌙 Dark Mode"):
     try: apply_dark_mode()
     except Exception: pass
 
+# --------------------------
+# Sidebar Extras / Dev
+# --------------------------
+st.sidebar.markdown("### 📧 Daily Escalation Email")
+if st.sidebar.button("Send Daily Email"):
+    st.session_state["_send_daily_email_now"] = True
+
+if st.sidebar.checkbox("🧪 View Raw Database"):
+    st.sidebar.dataframe(fetch_escalations())
+
+if st.sidebar.button("🗑️ Reset Database (Dev Only)"):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("DROP TABLE IF EXISTS escalations")
+    conn.commit()
+    conn.close()
+    st.sidebar.warning("Database reset. Please restart the app.")
+
 # Helpers
 def filter_df_by_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
     if not query or df.empty: return df
@@ -690,7 +709,6 @@ if page == "📊 Main Dashboard":
 
         # NEW: BU & Region filters on Main Dashboard
         md1, md2 = st.columns(2)
-        # Build choices dynamically but include standard defaults
         known_bu = ["PP","PS","IA","BMS","SP","H&D","A2E","Solar","OTHER"]
         bu_vals = sorted({*known_bu, *[str(x).upper() for x in df_all.get("bu_code", pd.Series([])).dropna().unique().tolist()]})
         if "All" not in bu_vals: bu_vals = ["All"] + bu_vals
@@ -810,7 +828,7 @@ if page == "📊 Main Dashboard":
                             st.markdown("<div class='controls-panel'>", unsafe_allow_html=True)
                             prefix = f"case_{case_id}"
 
-                            # Row A: Status (select) | Action Taken   (SAFE: no .str on plain string)
+                            # Row A: Status (select) | Action Taken
                             ra1, ra2 = st.columns([1.0, 2.2])
                             with ra1:
                                 status_raw = row.get("status")
@@ -920,7 +938,7 @@ if page == "📊 Main Dashboard":
     - Row B: **Owner + Owner Email**
     - Row C: **Save** (left) + **N+1 Email** + **Escalate to N+1**
 - **Escalation View** includes **SLA Breach** (unresolved high-priority > 10 minutes).
-- **BU & Region filters** now available on the **Main Dashboard** (top area).
+- **BU & Region filters** available on the **Main Dashboard** (top area).
         """)
 
 elif page == "🔥 SLA Heatmap":
@@ -966,7 +984,7 @@ elif page == "⚙️ Admin Tools":
 if 'email_thread' not in st.session_state:
     t = threading.Thread(target=email_polling_job, daemon=True); t.start(); st.session_state['email_thread']=t
 
-# Daily email scheduler
+# Daily email scheduler + sender
 def send_daily_escalation_email():
     d = fetch_escalations(); e = d[d["likely_to_escalate"].astype(str).str.lower()=="yes"] if not d.empty else d
     if e.empty: return
@@ -988,6 +1006,12 @@ Please find the attached Excel file for full details."""
             if EMAIL_USER and EMAIL_PASS: s.login(EMAIL_USER, EMAIL_PASS)
             s.send_message(msg)
     except Exception as ex: print(f"❌ Failed to send daily email: {ex}")
+
+# Handle immediate "Send Daily Email" action (triggered from Sidebar)
+if st.session_state.get("_send_daily_email_now"):
+    send_daily_escalation_email()
+    st.sidebar.success("✅ Daily escalation email sent.")
+    st.session_state["_send_daily_email_now"] = False
 
 import schedule, time as _t
 def schedule_daily_email():
