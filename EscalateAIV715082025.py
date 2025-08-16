@@ -767,28 +767,63 @@ if st.sidebar.button("Trigger SLA Check"):
             st.sidebar.info("All SLAs healthy")
 
 # Sidebar: notifications
+
+# ----------------------------------
+# Sidebar: 📲 WhatsApp & SMS Alerts
+# ----------------------------------
 st.sidebar.markdown("### 📲 WhatsApp & SMS Alerts")
-sel_status = st.sidebar.selectbox("Case Status", ["Open","In Progress","Resolved"])
+
+sel_status = st.sidebar.selectbox("Case Status", ["Open", "In Progress", "Resolved"])
+
 df_notify = fetch_escalations()
-st_notify = df_notify.get("status", pd.Series(dtype=str)).astype(str).str.strip().str.title()
-df_sel = df_notify[st_notify == sel_status] if sel_status else df_notify
-if not df_sel.empty:
-    esc_id = st.sidebar.selectbox("🔢 Select Escalation ID", df_sel["id"].astype(str).tolist())
-    phone = st.sidebar.text_input("📞 Phone Number", "+91", help="Include country code (e.g., +91)")
-    msg = st.sidebar.text_area("📨 Message", f"Update on your issue {esc_id}: our team has an update for you.")
-    c1, c2 = st.sidebar.columns(2)
-    with c1:
-        if st.sidebar.button("Send WhatsApp"):
-            try:
-                ok = send_whatsapp_message(phone, msg) if callable(send_whatsapp_message) else False
-                st.sidebar.success(f"✅ WhatsApp sent to {phone}") if ok else st.sidebar.error("❌ WhatsApp API failure")
-            except Exception as e:
-                st.sidebar.error(f"❌ WhatsApp send failed: {e}")
-    with c2:
-        if st.sidebar.button("Send SMS"):
-            st.sidebar.success(f"✅ SMS sent to {phone}") if send_sms(phone, msg) else None
+
+if not isinstance(df_notify, pd.DataFrame) or df_notify.empty:
+    st.sidebar.info("No cases yet.")
 else:
-    st.sidebar.info("No cases in the selected status.")
+    # Ensure a status column exists and normalize it safely
+    if 'status' not in df_notify.columns:
+        df_notify['status'] = 'Open'
+    st_notify = (
+        df_notify['status']
+        .astype(str)
+        .fillna('Open')
+        .str.strip()
+        .str.title()
+    )
+    df_notify = df_notify.assign(_status_norm=st_notify)
+
+    # Filter by chosen status
+    df_sel = df_notify[df_notify['_status_norm'] == sel_status]
+
+    if df_sel.empty:
+        st.sidebar.info("No cases in the selected status.")
+    else:
+        # Make sure we have IDs to show
+        if 'id' not in df_sel.columns:
+            df_sel = df_sel.reset_index().rename(columns={'index': 'id'})
+
+        esc_id = st.sidebar.selectbox(
+            "🔢 Select Escalation ID",
+            df_sel["id"].astype(str).tolist()
+        )
+        phone = st.sidebar.text_input("📞 Phone Number", "+91", help="Include country code (e.g., +91)")
+        msg = st.sidebar.text_area(
+            "📨 Message",
+            f"Update on your issue {esc_id}: our team has an update for you."
+        )
+
+        c1, c2 = st.sidebar.columns(2)
+        with c1:
+            if st.sidebar.button("Send WhatsApp"):
+                try:
+                    ok = send_whatsapp_message(phone, msg) if callable(send_whatsapp_message) else False
+                    st.sidebar.success(f"✅ WhatsApp sent to {phone}") if ok else st.sidebar.error("❌ WhatsApp API failure")
+                except Exception as e:
+                    st.sidebar.error(f"❌ WhatsApp send failed: {e}")
+        with c2:
+            if st.sidebar.button("Send SMS"):
+                st.sidebar.success(f"✅ SMS sent to {phone}") if send_sms(phone, msg) else None
+
 
 # Sidebar: downloads / misc
 st.sidebar.markdown("### 📤 Downloads")
