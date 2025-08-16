@@ -1,4 +1,4 @@
-# EscalateAIV610082025.py — updated with "Likely to Escalate" tab + search bars
+# EscalateAIV610082025.py — Likely-to-Escalate + Search + Detailed Help + Sidebar Filters
 
 # ======================
 # Imports & Environment
@@ -589,6 +589,15 @@ if st.sidebar.button("Trigger SLA Check"):
         st.sidebar.info("No data yet.")
 
 # --------------------------
+# Sidebar: Escalation Filters (MOVED HERE)
+# --------------------------
+st.sidebar.markdown("### 🔍 Escalation Filters")
+status_opt   = st.sidebar.selectbox("Status",   ["All", "Open", "In Progress", "Resolved"], index=0)
+severity_opt = st.sidebar.selectbox("Severity", ["All", "minor", "major", "critical"], index=0)
+sentiment_opt= st.sidebar.selectbox("Sentiment",["All", "positive", "neutral", "negative"], index=0)
+category_opt = st.sidebar.selectbox("Category", ["All", "technical", "support", "dissatisfaction", "safety", "business", "other"], index=0)
+
+# --------------------------
 # Sidebar: Manual Alerts
 # --------------------------
 st.sidebar.markdown("### 🔔 Manual Notifications")
@@ -699,7 +708,6 @@ def filter_df_by_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
     q = str(query).strip().lower()
     if df.empty:
         return df
-    # Build a combined text column to search across typical fields
     cols = ['id','customer','issue','owner','action_owner','owner_email',
             'category','severity','sentiment','status']
     present = [c for c in cols if c in df.columns]
@@ -710,27 +718,41 @@ def filter_df_by_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
 # Main Page Routing
 # ===============================
 if page == "📊 Main Dashboard":
-    # Filters (main)
-    st.markdown("### 🔍 Escalation Filters")
+    # ---------- Detailed Description / Help ----------
+    with st.expander("ℹ️ How this dashboard works (click to expand)", expanded=True):
+        st.markdown("""
+**What you see**
+- **Kanban Board** split into **Open**, **In Progress**, **Resolved**.
+- Each card shows **Severity**, **Urgency**, **Criticality**, **Category**, **Sentiment**, **Age**, and a **Likely to Escalate** badge.
+
+**How 'Likely to Escalate' is computed**
+- If a trained model exists, it predicts using: `sentiment`, `urgency`, `severity`, `criticality`.
+- Otherwise a fallback rule triggers **Yes** if at least **two** are true:
+  - Severity is *critical/high*
+  - Urgency is *high/immediate*
+  - Sentiment is *negative/very negative*
+
+**Identifiers & Priority**
+- IDs are sequential like **SESICE-25xxxxx**.
+- **Priority** becomes *high* if **Severity=critical** or **Urgency=high**.
+- SLA warnings show if high-priority cases remain unresolved for **> 10 minutes**.
+
+**Actions**
+- **✔️ Resolved**: marks the case resolved and notifies the owner (Email/Teams).
+- **🚀 To N+1**: forwards the case to a provided escalation email.
+- **💾 Save Changes**: updates Status, Action Taken, Owner, Owner Email and notifies.
+
+**Colors**
+- Severity: critical=red, major=orange, minor=green
+- Urgency: high=red, normal=green
+- Likely badge: red if **Yes**, grey if **No**
+        """)
+
+    # ---------- Load + Apply Sidebar Filters ----------
     df_all = fetch_escalations()
     df_all['timestamp'] = pd.to_datetime(df_all['timestamp'], errors='coerce')
 
-    # Banner if breaches exist
-    breaches_banner = df_all[(df_all['status'].str.title() != 'Resolved') &
-                             (df_all['priority'].str.lower() == 'high') &
-                             ((datetime.datetime.now() - df_all['timestamp']) > datetime.timedelta(minutes=10))]
-    if not breaches_banner.empty:
-        st.markdown(
-            f"<div style='background:#dc3545;padding:8px;border-radius:5px;color:white;text-align:center;'>"
-            f"<strong>🚨 {len(breaches_banner)} SLA Breach(s) Detected</strong></div>",
-            unsafe_allow_html=True
-        )
-
-    status_opt = st.selectbox("Status", ["All", "Open", "In Progress", "Resolved"], index=0)
-    severity_opt = st.selectbox("Severity", ["All", "minor", "major", "critical"], index=0)
-    sentiment_opt = st.selectbox("Sentiment", ["All", "positive", "neutral", "negative"], index=0)
-    category_opt = st.selectbox("Category", ["All", "technical", "support", "dissatisfaction", "safety", "business", "other"], index=0)
-
+    # Sidebar filter application
     filtered_df = df_all.copy()
     if status_opt != "All":
         filtered_df = filtered_df[filtered_df["status"].str.strip().str.title() == status_opt]
@@ -741,7 +763,18 @@ if page == "📊 Main Dashboard":
     if category_opt != "All":
         filtered_df = filtered_df[filtered_df["category"].str.lower() == category_opt.lower()]
 
-    # Tabs (UPDATED: "Likely to Escalate")
+    # SLA banner
+    breaches_banner = filtered_df[(filtered_df['status'].str.title() != 'Resolved') &
+                                  (filtered_df['priority'].str.lower() == 'high') &
+                                  ((datetime.datetime.now() - filtered_df['timestamp']) > datetime.timedelta(minutes=10))]
+    if not breaches_banner.empty:
+        st.markdown(
+            f"<div style='background:#dc3545;padding:8px;border-radius:5px;color:white;text-align:center;'>"
+            f"<strong>🚨 {len(breaches_banner)} SLA Breach(s) Detected</strong></div>",
+            unsafe_allow_html=True
+        )
+
+    # ---------- Tabs ----------
     tabs = st.tabs(["🗃️ All", "🚩 Likely to Escalate", "🔁 Feedback & Retraining", "📊 Analytics"])
 
     # --------------------- Tab 0: All ---------------------
@@ -768,7 +801,6 @@ if page == "📊 Main Dashboard":
                 for _, row in bucket.iterrows():
                     try:
                         summary = summarize_issue_text(row.get('issue', ''))
-                        # Reuse likely_to_escalate or re-predict to be robust
                         model = train_model()
                         sentiment = (row.get("sentiment") or "neutral").lower()
                         urgency = (row.get("urgency") or "normal").lower()
@@ -916,7 +948,7 @@ Please review the updates on the EscalateAI dashboard.
     # ----------------- Tab 1: Likely to Escalate -----------------
     with tabs[1]:
         st.subheader("🚩 Likely to Escalate")
-        # Compute likely = Yes using model or fallback and then search
+        # Compute likely = Yes using model/fallback then allow search
         df_le = filtered_df.copy()
         if not df_le.empty:
             model = train_model()
