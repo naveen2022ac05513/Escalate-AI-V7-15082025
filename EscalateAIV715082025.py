@@ -2,14 +2,16 @@
 # --------------------------------------------------------------------
 # EscalateAI — Customer Escalation Prediction & Management Tool
 # --------------------------------------------------------------------
-# New in this build:
-# • Larger gap between KPI Panel Row 1 and Row 2 (no extra space above KPIs)
-# • Controls layout (inside each expander):
-#     Row A: Status label + Status dropdown + Action Taken
+# This build includes:
+# • Compact, clean expander with NO faint bar under the issue
+# • KPI panel in two rows with a larger gap between rows
+# • Uniform field labels & inputs (Status, text fields, etc.)
+# • Controls layout:
+#     Row A: Status (select) + Action Taken
 #     Row B: Owner + Owner Email
-#     Row C: N+1 Email ID + Escalate to N+1 button + Save button
-# • Clean, compact UI maintained (sticky title, colors, search, SLA Breach view)
-# • SMS/WhatsApp, duplicate detection, analytics, email polling, etc.
+#     Row C: Save (left) + N+1 Email ID + Escalate to N+1 (right)
+# • Sticky title, search, SLA Breach view, WhatsApp + SMS, duplicate detection,
+#   email polling, daily summary email, and quick analytics.
 # --------------------------------------------------------------------
 
 import os, re, time, datetime, threading, hashlib, sqlite3, smtplib, requests, imaplib, email, traceback
@@ -66,7 +68,7 @@ except Exception:
     def load_custom_plugins(): pass
     def send_whatsapp_message(*a, **k): return False
 
-# ---------------- Quick analytics view (tab) ----------------
+# ---------------- Quick analytics view ----------------
 def show_analytics_view():
     df = fetch_escalations()
     st.title("📊 Escalation Analytics")
@@ -404,18 +406,16 @@ except Exception: pass
 try: load_custom_plugins()
 except Exception: pass
 
-# Styles (gap, compact headings, etc.)
+# Styles (keep this one block; later overrides depend on order)
 st.markdown("""
 <style>
   .sticky-header{position:sticky;top:0;z-index:999;background:linear-gradient(135deg,#0ea5e9 0%,#7c3aed 100%);
     padding:12px 16px;border-radius:0 0 12px 12px;box-shadow:0 8px 20px rgba(0,0,0,.12);}
   .sticky-header h1{color:#fff;margin:0;text-align:center;font-size:30px;line-height:1.2;} /* 1.5× */
 
-  /* Kanban headers */
   .kanban-title{display:flex;justify-content:center;align-items:center;gap:8px;border-radius:10px;
     padding:8px 10px;color:#fff;text-align:center;box-shadow:0 6px 14px rgba(0,0,0,.07);margin:4px 0;font-size:14px;}
 
-  /* Expander */
   details[data-testid="stExpander"]{
     background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;margin:2px 0 !important;
     box-shadow:0 4px 10px rgba(0,0,0,.05);
@@ -423,102 +423,70 @@ st.markdown("""
   details[data-testid="stExpander"] > summary{padding:8px 10px;font-weight:700;}
   details[data-testid="stExpander"] > div[role="region"]{padding:8px 10px 10px 10px;}
 
-  /* Tighten vertical gaps */
   div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"]{gap:.25rem !important;}
 
   .age{padding:4px 8px;border-radius:8px;color:#fff;font-weight:600;text-align:center;font-size:12px;}
+  .summary{font-size:15px;color:#0f172a;margin-bottom:6px;}  /* small, no blank gap */
 
-  .summary{font-size:15px;color:#0f172a;margin:0 0 4px 0;}  /* NO extra space above KPIs */
   .kv{font-size:12px;margin:2px 0;white-space:nowrap;}
 
   .aisum{background:#0b1220;color:#e5f2ff;padding:10px 12px;border-radius:10px;
          box-shadow:0 6px 14px rgba(0,0,0,.10);font-size:13px;}
   .sla-pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#ef4444;color:#fff;font-weight:600;font-size:12px;}
 
-  /* Panels + chips */
-  .kpi-panel{
-    background:#f8fafc;border:1px solid #e5e7eb;border-radius:12px;padding:10px 12px;margin:0 0 10px 0; /* no top margin */
-  }
-  .controls-panel{
-    background:#ffffff;border:1px dashed #e5e7eb;border-radius:12px;padding:10px 12px;margin:6px 0 2px 0;
-  }
-  .field-label-inline{font-size:12px;font-weight:600;color:#475569;padding-top:6px;}
+  /* KPI panel — transparent, no border; larger row gap */
+  .kpi-panel{ margin-top:0 !important; background:transparent !important; border:0 !important; box-shadow:none !important; padding:0 !important; }
+  .kpi-gap{ height:22px !important; }
+
+  /* Hide any <hr> so no thin bars appear */
+  .soft-hr{display:none !important;}
+  details[data-testid="stExpander"] hr,
+  div[data-testid="stMarkdownContainer"] hr{ display:none !important; height:0 !important; margin:0 !important; border:0 !important; padding:0 !important; }
+
   .tag-pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:600;
             border:1px solid var(--c,#cbd5e1);color:var(--c,#334155);background:#fff;white-space:nowrap;}
-  .soft-hr{border:0;height:1px;background:linear-gradient(to right, transparent, #e5e7eb, transparent);margin:6px 0 8px 0;}
-  .kpi-gap{height:18px;}   /* BIGGER gap between KPI rows */
-  .btn-wide > div button{width:100%;}
+
+  /* Controls panel — no border */
+  .controls-panel{ background:#fff; border:0; border-radius:12px; padding:10px 0 2px 0; margin:6px 0 2px 0; }
+
+  /* Uniform labels */
+  div[data-testid="stTextInput"]  label,
+  div[data-testid="stTextArea"]   label,
+  div[data-testid="stSelectbox"]  label {
+    font-size:13px !important;
+    font-weight:600 !important;
+    color:#475569 !important;
+    margin-bottom:4px !important;
+  }
+
+  /* Inputs / textareas */
+  div[data-testid="stTextInput"] input,
+  div[data-testid="stTextArea"] textarea {
+    background:#f3f4f6 !important;
+    border:1px solid #e5e7eb !important;
+    border-radius:8px !important;
+    height:40px !important;
+    padding:8px 10px !important;
+  }
+  /* Selectbox like input */
+  div[data-testid="stSelectbox"] div[role="combobox"]{
+    background:#f3f4f6 !important;
+    border:1px solid #e5e7eb !important;
+    border-radius:8px !important;
+    min-height:40px !important;
+    padding:6px 10px !important;
+    align-items:center !important;
+  }
+
+  /* Buttons */
+  .controls-panel .stButton>button{
+    height:40px !important;
+    border-radius:10px !important;
+    padding:0 14px !important;
+  }
 </style>
 <div class="sticky-header"><h1>🚨 EscalateAI – AI Based Customer Escalation Prediction & Management Tool</h1></div>
 """, unsafe_allow_html=True)
-
-st.markdown("""
-<style>
-  /* Bigger space between KPI rows */
-  .kpi-gap{height:22px;}
-
-  /* Remove the faint/dashed panel border under the issue (controls area) */
-  .controls-panel{
-    background:#ffffff;
-    border:0;                    /* <-- no border */
-    border-radius:12px;
-    padding:10px 0 2px 0;        /* keep layout tight */
-    margin:6px 0 2px 0;
-  }
-
-  /* Uniform label styling for all inputs/dropdowns */
-  div[data-testid="stTextInput"]  label,
-  div[data-testid="stSelectbox"]  label,
-  div[data-testid="stTextArea"]   label {
-    font-size:13px;
-    font-weight:600;
-    color:#475569;
-    margin-bottom:4px;
-  }
-</style>
-""", unsafe_allow_html=True)
-
-# Drop this right AFTER your existing <style> to remove the thin/empty bar under the issue
-st.markdown("""
-<style>
-  /* Hide any custom or default horizontal rules inside the expander */
-  .soft-hr{display:none !important; height:0 !important; border:0 !important; margin:0 !important; padding:0 !important;}
-  details[data-testid="stExpander"] hr{display:none !important;}
-
-  /* Ensure KPI panel sits flush under the issue (no top gap that can look like a bar) */
-  .kpi-panel{ margin-top:0 !important; }
-</style>
-""", unsafe_allow_html=True)
-# Paste this AFTER your existing <style> block — it removes the faint/transparent bar
-# that shows up right under the issue text (above the KPI chips).
-
-st.markdown("""
-<style>
-  /* Make the KPI panel start flush under the issue and remove any bar-like styling */
-  .kpi-panel{
-    margin-top:0 !important;
-    background:transparent !important;   /* no light panel background */
-    border:0 !important;                 /* no border line that looks like a bar */
-    box-shadow:none !important;          /* no shadow that can read as a bar */
-    padding-top:0 !important;
-  }
-
-  /* Hide any <hr> that Streamlit or markdown may inject in that spot */
-  details[data-testid="stExpander"] hr,
-  div[data-testid="stMarkdownContainer"] hr{
-    display:none !important;
-    height:0 !important;
-    margin:0 !important;
-    border:0 !important;
-    padding:0 !important;
-  }
-
-  /* Consistent spacing: small gap below the issue, larger gap between KPI rows */
-  .summary{ margin-bottom:6px !important; }
-  .kpi-gap{ height:22px !important; }
-</style>
-""", unsafe_allow_html=True)
-
 
 # Sidebar navigation
 st.sidebar.title("🔍 Navigation")
@@ -567,7 +535,7 @@ if st.sidebar.button("Trigger SLA Check"):
             send_alert(msg, via="teams"); send_alert(msg, via="email"); st.sidebar.success("✅ Alerts sent")
         else: st.sidebar.info("All SLAs healthy")
 
-# Sidebar: static filters (still available; main view has view radio)
+# Sidebar: filters
 st.sidebar.markdown("### 🔍 Escalation Filters")
 status_opt    = st.sidebar.selectbox("Status",   ["All","Open","In Progress","Resolved"], index=0)
 severity_opt  = st.sidebar.selectbox("Severity", ["All","minor","major","critical"], index=0)
@@ -736,7 +704,6 @@ if page == "📊 Main Dashboard":
                         except Exception:
                             age_str, age_col = "N/A", "#6b7280"
 
-                        # Clean expander
                         with st.expander(f"🆔 {case_id} — {customer} {flag}", expanded=False):
                             # Summary + Age
                             r0a, r0b = st.columns([0.75, 0.25])
@@ -745,94 +712,62 @@ if page == "📊 Main Dashboard":
                             with r0b:
                                 st.markdown(f"<div style='text-align:right;'><span class='age' style='background:{age_col};'>Age: {age_str}</span></div>", unsafe_allow_html=True)
 
-                            # --- KPI PANEL (two rows with larger gap, no extra space above) ---
+                            # --- KPI PANEL (transparent, two rows with larger gap) ---
                             st.markdown("<div class='kpi-panel'>", unsafe_allow_html=True)
-                            
+
                             ka1, ka2, ka3 = st.columns(3)
                             with ka1:
-                                st.markdown(
-                                    f"<div class='kv'>📛 <b>Severity</b> "
-                                    f"<span class='tag-pill' style='--c:{sev_color}; border-color:{sev_color}; color:{sev_color};'>{sv.capitalize()}</span></div>",
-                                    unsafe_allow_html=True,
-                                )
+                                st.markdown(f"<div class='kv'>📛 <b>Severity</b> <span class='tag-pill' style='--c:{sev_color}; border-color:{sev_color}; color:{sev_color};'>{sv.capitalize()}</span></div>", unsafe_allow_html=True)
                             with ka2:
-                                st.markdown(
-                                    f"<div class='kv'>⚡ <b>Urgency</b> "
-                                    f"<span class='tag-pill' style='--c:{urg_color}; border-color:{urg_color}; color:{urg_color};'>{'High' if u=='high' else 'Normal'}</span></div>",
-                                    unsafe_allow_html=True,
-                                )
+                                st.markdown(f"<div class='kv'>⚡ <b>Urgency</b> <span class='tag-pill' style='--c:{urg_color}; border-color:{urg_color}; color:{urg_color};'>{'High' if u=='high' else 'Normal'}</span></div>", unsafe_allow_html=True)
                             with ka3:
-                                st.markdown(
-                                    f"<div class='kv'>🎯 <b>Criticality</b> "
-                                    f"<span class='tag-pill' style='--c:#8b5cf6; border-color:#8b5cf6; color:#8b5cf6;'>{cr.capitalize()}</span></div>",
-                                    unsafe_allow_html=True,
-                                )
-                            
-                            # Larger gap between KPI rows
+                                st.markdown(f"<div class='kv'>🎯 <b>Criticality</b> <span class='tag-pill' style='--c:#8b5cf6; border-color:#8b5cf6; color:#8b5cf6;'>{cr.capitalize()}</span></div>", unsafe_allow_html=True)
+
                             st.markdown("<div class='kpi-gap'></div>", unsafe_allow_html=True)
-                            
+
                             kb1, kb2, kb3 = st.columns(3)
                             with kb1:
-                                st.markdown(
-                                    f"<div class='kv'>📂 <b>Category</b> "
-                                    f"<span class='tag-pill'>{(row.get('category') or 'other').capitalize()}</span></div>",
-                                    unsafe_allow_html=True,
-                                )
+                                st.markdown(f"<div class='kv'>📂 <b>Category</b> <span class='tag-pill'>{(row.get('category') or 'other').capitalize()}</span></div>", unsafe_allow_html=True)
                             with kb2:
-                                st.markdown(
-                                    f"<div class='kv'>💬 <b>Sentiment</b> "
-                                    f"<span class='tag-pill' style='--c:{sent_color}; border-color:{sent_color}; color:{sent_color};'>{s.capitalize()}</span></div>",
-                                    unsafe_allow_html=True,
-                                )
+                                st.markdown(f"<div class='kv'>💬 <b>Sentiment</b> <span class='tag-pill' style='--c:{sent_color}; border-color:{sent_color}; color:{sent_color};'>{s.capitalize()}</span></div>", unsafe_allow_html=True)
                             with kb3:
-                                st.markdown(
-                                    f"<div class='kv'>📈 <b>Likely</b> "
-                                    f"<span class='tag-pill' style='--c:{esc_color}; border-color:{esc_color}; color:{esc_color};'>{likely}</span></div>",
-                                    unsafe_allow_html=True,
-                                )
+                                st.markdown(f"<div class='kv'>📈 <b>Likely</b> <span class='tag-pill' style='--c:{esc_color}; border-color:{esc_color}; color:{esc_color};'>{likely}</span></div>", unsafe_allow_html=True)
+
                             st.markdown("</div>", unsafe_allow_html=True)  # /kpi-panel
-                            
-                            # (Removed the <hr class='soft-hr'/> line to eliminate the transparent separator)
-                            
-                            # ---------- CONTROLS (3 tidy rows) ----------
+
+                            # ---------- CONTROLS ----------
                             st.markdown("<div class='controls-panel'>", unsafe_allow_html=True)
                             prefix = f"case_{case_id}"
-                            
-                            # Row A: Status label | Status dropdown | Action Taken
-                            a1, a2, a3 = st.columns([0.35, 1.1, 2.1])
-                            with a1:
-                                st.markdown("<div class='field-label-inline'>Status</div>", unsafe_allow_html=True)
-                            with a2:
+
+                            # Row A: Status (select) | Action Taken
+                            ra1, ra2 = st.columns([1.0, 2.2])
+                            with ra1:
                                 current_status = (row.get("status") or "Open").strip().title()
                                 new_status = st.selectbox(
-                                    label="",
-                                    options=["Open","In Progress","Resolved"],
+                                    "Status",
+                                    ["Open","In Progress","Resolved"],
                                     index=["Open","In Progress","Resolved"].index(current_status) if current_status in ["Open","In Progress","Resolved"] else 0,
                                     key=f"{prefix}_status",
-                                    label_visibility="collapsed",
                                 )
-                            with a3:
+                            with ra2:
                                 action_taken = st.text_input("Action Taken", row.get("action_taken",""), key=f"{prefix}_action")
-                            
+
                             # Row B: Owner | Owner Email
-                            b1, b2 = st.columns(2)
-                            with b1:
+                            rb1, rb2 = st.columns(2)
+                            with rb1:
                                 owner = st.text_input("Owner", row.get("owner",""), key=f"{prefix}_owner")
-                            with b2:
+                            with rb2:
                                 owner_email = st.text_input("Owner Email", row.get("owner_email",""), key=f"{prefix}_email")
-                            
-                            # Row C: Save (left) | N+1 Email | Escalate to N+1 (right)
-                            c1, c2, c3 = st.columns([0.9, 1.6, 0.95])
-                            
-                            with c1:
+
+                            # Row C: Save (left) | N+1 Email ID | Escalate
+                            rc1, rc2, rc3 = st.columns([0.9, 1.6, 1.0])
+                            with rc1:
                                 if st.button("💾 Save", key=f"{prefix}_save"):
                                     update_escalation_status(case_id, new_status, action_taken, owner, owner_email)
                                     st.success("✅ Saved")
-                            
-                            with c2:
+                            with rc2:
                                 n1_email = st.text_input("N+1 Email ID", key=f"{prefix}_n1")
-                            
-                            with c3:
+                            with rc3:
                                 if st.button("🚀 Escalate to N+1", key=f"{prefix}_n1btn"):
                                     update_escalation_status(
                                         case_id, new_status,
@@ -844,7 +779,7 @@ if page == "📊 Main Dashboard":
                                         send_alert(f"Case {case_id} escalated to N+1.", via="email", recipient=n1_email)
                                     send_alert(f"Case {case_id} escalated to N+1.", via="teams")
                                     st.success("🚀 Escalated to N+1")
-                            
+
                             st.markdown("</div>", unsafe_allow_html=True)  # /controls-panel
                     except Exception as e:
                         st.error(f"Error rendering case #{row.get('id','Unknown')}: {e}")
@@ -905,14 +840,14 @@ if page == "📊 Main Dashboard":
         st.markdown("""
 - **Kanban:** Open (🟧), In Progress (🔵), Resolved (🟩)
 - **Expander layout inside each card:**
-  - Summary (no extra blank space) + Age chip
-  - **KPI panel** in **two rows** with **larger gap** (Severity, Urgency, Criticality, Category, Sentiment, Likely)
+  - Summary (no faint bar) + Age chip
+  - **KPI panel**: 2 rows with a larger gap (Severity, Urgency, Criticality, Category, Sentiment, Likely)
   - **Controls**
-    - Row A: **Status + Dropdown + Action Taken**
+    - Row A: **Status (select) + Action Taken**
     - Row B: **Owner + Owner Email**
-    - Row C: **N+1 Email + Escalate + Save**
+    - Row C: **Save** (left) + **N+1 Email** + **Escalate to N+1**
 - **Escalation View** includes **SLA Breach** (unresolved high-priority > 10 minutes).
-- **Likely to Escalate** uses the model (falls back to rules until enough data).
+- **Likely to Escalate** uses the model (rules fallback until enough data).
         """)
 
 elif page == "🔥 SLA Heatmap":
