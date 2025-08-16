@@ -557,69 +557,117 @@ if page == "📊 Main Dashboard":
     df_all = fetch_escalations()
     df_all['timestamp'] = pd.to_datetime(df_all['timestamp'], errors='coerce')
 
-    tabs = st.tabs(["🗃️ All","🚩 Likely to Escalate","🔁 Feedback & Retraining","📊 Summary Analytics","ℹ️ How this Dashboard Works"])
+    tabs = st.tabs([
+        "🗃️ All",
+        "🚩 Likely to Escalate",
+        "🔁 Feedback & Retraining",
+        "📊 Summary Analytics",
+        "ℹ️ How this Dashboard Works"
+    ])
 
     # ---------------- Tab 0: All ----------------
     with tabs[0]:
         st.subheader("📊 Escalation Kanban Board — All Cases")
 
-        # Escalation view (now includes SLA Breach) + SLA small pill + search
+        # Escalation view (now includes SLA Breach) + small SLA pill + AI summary
         top_l, top_m, top_r = st.columns([0.5, 0.2, 0.3])
         with top_l:
             view_radio = st.radio(
                 "Escalation View",
                 ["All", "Likely to Escalate", "Not Likely", "SLA Breach"],
-                horizontal=True
+                horizontal=True,
             )
+
         with top_m:
-            # compute SLA breaches quickly for the pill
-            df_tmp = df_all.copy()
-            df_tmp['timestamp'] = pd.to_datetime(df_tmp['timestamp'], errors='coerce')
-            sla_breaches = df_tmp[(df_tmp['status'].str.title()!='Resolved') &
-                                  (df_tmp['priority'].str.lower()=='high') &
-                                  ((datetime.datetime.now()-df_tmp['timestamp']) > datetime.timedelta(minutes=10))]
-            st.markdown(f"<span class='sla-pill'>⏱️ {len(sla_breaches)} SLA breach(s)</span>", unsafe_allow_html=True)
+            # SLA pill (small)
+            _df = df_all.copy()
+            _df['timestamp'] = pd.to_datetime(_df['timestamp'], errors='coerce')
+            sla_breaches = _df[
+                (_df['status'].str.title() != 'Resolved')
+                & (_df['priority'].str.lower() == 'high')
+                & ((datetime.datetime.now() - _df['timestamp']) > datetime.timedelta(minutes=10))
+            ]
+            st.markdown(
+                f"<span class='sla-pill'>⏱️ {len(sla_breaches)} SLA breach(s)</span>",
+                unsafe_allow_html=True,
+            )
+
         with top_r:
             try:
                 ai_text = summarize_escalations()
             except Exception:
                 ai_text = "Summary unavailable."
-            st.markdown(f"<div class='aisum'><b>🧠 AI Summary</b><br>{ai_text}</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='aisum'><b>🧠 AI Summary</b><br>{ai_text}</div>",
+                unsafe_allow_html=True,
+            )
 
         st.caption("🔎 Search")
-        q = st.text_input("Search cases", placeholder="ID, customer, issue, owner, email, status…")
+        q = st.text_input(
+            "Search cases",
+            placeholder="ID, customer, issue, owner, email, status…"
+        )
 
-        # Sidebar filter set first
+        # Apply sidebar filters first
         filt = df_all.copy()
-        if status_opt != "All":   filt = filt[filt["status"].str.strip().str.title()==status_opt]
-        if severity_opt != "All": filt = filt[filt["severity"].str.lower()==severity_opt.lower()]
-        if sentiment_opt != "All":filt = filt[filt["sentiment"].str.lower()==sentiment_opt.lower()]
-        if category_opt != "All": filt = filt[filt["category"].str.lower()==category_opt.lower()]
+        if status_opt != "All":
+            filt = filt[filt["status"].str.strip().str.title() == status_opt]
+        if severity_opt != "All":
+            filt = filt[filt["severity"].str.lower() == severity_opt.lower()]
+        if sentiment_opt != "All":
+            filt = filt[filt["sentiment"].str.lower() == sentiment_opt.lower()]
+        if category_opt != "All":
+            filt = filt[filt["category"].str.lower() == category_opt.lower()]
 
-        # Apply Escalation View radio
+        # Apply escalation view radio
         if view_radio == "SLA Breach":
-            df_x = filt.copy()
-            df_x['timestamp'] = pd.to_datetime(df_x['timestamp'], errors='coerce')
-            filt = df_x[(df_x['status'].str.title()!='Resolved') &
-                        (df_x['priority'].str.lower()=='high') &
-                        ((datetime.datetime.now()-df_x['timestamp']) > datetime.timedelta(minutes=10))]
-        elif view_radio != "All":
-            if not filt.empty:
-                model_tmp = train_model()
-                filt["likely_calc"] = filt.apply(lambda r: predict_escalation(
+            _x = filt.copy()
+            _x['timestamp'] = pd.to_datetime(_x['timestamp'], errors='coerce')
+            filt = _x[
+                (_x['status'].str.title() != 'Resolved')
+                & (_x['priority'].str.lower() == 'high')
+                & ((datetime.datetime.now() - _x['timestamp']) > datetime.timedelta(minutes=10))
+            ]
+        elif view_radio != "All" and not filt.empty:
+            model_tmp = train_model()
+            def _pred_row(r):
+                return predict_escalation(
                     model_tmp,
                     (r.get("sentiment") or "neutral").lower(),
                     (r.get("urgency") or "normal").lower(),
                     (r.get("severity") or "minor").lower(),
-                    (r.get("criticality") or "medium").lower()
-                ), axis=1)
-                filt = filt[filt["likely_calc"].eq("Yes")] if view_radio=="Likely to Escalate" else filt[filt["likely_calc"].ne("Yes")]
+                    (r.get("criticality") or "medium").lower(),
+                )
+            filt = filt.copy()
+            filt["likely_calc"] = filt.apply(_pred_row, axis=1)
+            filt = (
+                filt[filt["likely_calc"] == "Yes"]
+                if view_radio == "Likely to Escalate"
+                else filt[filt["likely_calc"] != "Yes"]
+            )
 
-        view = filter_df_by_query(filt.copy(), q)
+        # Search filter
+        def _search(df: pd.DataFrame, query: str) -> pd.DataFrame:
+            if not query or df.empty:
+                return df
+            ql = str(query).strip().lower()
+            cols = [
+                "id", "customer", "issue", "owner", "action_owner",
+                "owner_email", "category", "severity", "sentiment", "status"
+            ]
+            present = [c for c in cols if c in df.columns]
+            blob = df[present].astype(str).apply(lambda s: s.str.lower()).agg(" ".join, axis=1)
+            return df[blob.str.contains(ql, na=False, regex=False)]
+
+        view = _search(filt.copy(), q)
         view["status"] = view["status"].fillna("Open").str.strip().str.title()
 
-        counts, total_cases = view['status'].value_counts(), int(len(view))
-        st.markdown(f"<div class='pill-total'>Total Cases: {total_cases}</div>", unsafe_allow_html=True)
+        counts = view["status"].value_counts()
+        total_cases = int(len(view))
+        st.markdown(
+            f"<div class='pill-total'>Total Cases: {total_cases}</div>",
+            unsafe_allow_html=True,
+        )
 
         c1, c2, c3 = st.columns(3)
         cols = {"Open": c1, "In Progress": c2, "Resolved": c3}
@@ -627,84 +675,154 @@ if page == "📊 Main Dashboard":
 
         for name, col in cols.items():
             with col:
-                n = int(counts.get(name,0)); hdr = STATUS_COLORS[name]
-                col.markdown(f"<div class='kanban-title' style='background:{hdr};'><span>{name}</span><span>({n})</span></div>", unsafe_allow_html=True)
-                bucket = view[view["status"]==name]
+                n = int(counts.get(name, 0))
+                hdr = STATUS_COLORS[name]
+                col.markdown(
+                    f"<div class='kanban-title' style='background:{hdr};'>"
+                    f"<span>{name}</span><span>({n})</span></div>",
+                    unsafe_allow_html=True,
+                )
+
+                bucket = view[view["status"] == name]
                 for _, row in bucket.iterrows():
                     try:
                         s  = (row.get("sentiment") or "neutral").lower()
                         u  = (row.get("urgency") or "normal").lower()
                         sv = (row.get("severity") or "minor").lower()
                         cr = (row.get("criticality") or "medium").lower()
-                        likely = predict_escalation(model_for_view, s,u,sv,cr)
+                        likely = predict_escalation(model_for_view, s, u, sv, cr)
 
                         sev_color = SEVERITY_COLORS.get(sv, "#6b7280")
                         urg_color = URGENCY_COLORS.get(u, "#6b7280")
-                        sent_color= {"negative":"#ef4444","positive":"#22c55e","neutral":"#f59e0b"}.get(s, "#6b7280")
-                        esc_color = "#dc2626" if likely=="Yes" else "#6b7280"
+                        sent_color = {
+                            "negative": "#ef4444",
+                            "positive": "#22c55e",
+                            "neutral":  "#f59e0b",
+                        }.get(s, "#6b7280")
+                        esc_color = "#dc2626" if likely == "Yes" else "#6b7280"
 
-                        case_id  = row.get('id','N/A')
-                        customer = row.get('customer','Unknown')
-                        summary  = summarize_issue_text(row.get('issue',''))
-                        flag = "🚩" if likely=="Yes" else ""
+                        case_id  = row.get("id", "N/A")
+                        customer = row.get("customer", "Unknown")
+                        summary  = summarize_issue_text(row.get("issue", ""))
+                        flag = "🚩" if likely == "Yes" else ""
 
-                        # Age chip
+                        # Age chip (safe)
                         try:
                             ts = pd.to_datetime(row.get("timestamp"))
                             dlt = datetime.datetime.now() - ts
-                            days = dlt.days; hours, rem = divmod(dlt.seconds, 3600); minutes, _ = divmod(rem, 60)
+                            days = dlt.days
+                            hours, rem = divmod(dlt.seconds, 3600)
+                            minutes, _ = divmod(rem, 60)
                             age_str = f"{days}d {hours}h {minutes}m"
-                            age_col = "#22c55e" if dlt.total_seconds()/3600 < 12 else "#f59e0b" if dlt.total_seconds()/3600 < 24 else "#ef4444"
+                            age_col = (
+                                "#22c55e" if dlt.total_seconds()/3600 < 12
+                                else "#f59e0b" if dlt.total_seconds()/3600 < 24
+                                else "#ef4444"
+                            )
                         except Exception:
                             age_str, age_col = "N/A", "#6b7280"
 
-                        # Only expander (no wrapper) — eliminates the transparent bar
+                        # Only expander (no wrapper) — removes the “transparent bar”
                         with st.expander(f"🆔 {case_id} — {customer} {flag}", expanded=False):
                             r0a, r0b = st.columns([0.75, 0.25])
-                            with r0a: st.markdown(f"<div class='summary'>{summary}</div>", unsafe_allow_html=True)
-                            with r0b: st.markdown(f"<div style='text-align:right;'><span class='age' style='background:{age_col};'>Age: {age_str}</span></div>", unsafe_allow_html=True)
+                            with r0a:
+                                st.markdown(f"<div class='summary'>{summary}</div>", unsafe_allow_html=True)
+                            with r0b:
+                                st.markdown(
+                                    f"<div style='text-align:right;'>"
+                                    f"<span class='age' style='background:{age_col};'>Age: {age_str}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
 
-                            # Compact single-line (adjacent) KPI row (6 columns)
+                            # Single-line KPI row (adjacent)
                             k1, k2, k3, k4, k5, k6 = st.columns(6)
-                            with k1: st.markdown(f"<div class='kv'>📛 <b>Severity:</b> <span class='badge' style='background:{sev_color};'>{sv.capitalize()}</span></div>", unsafe_allow_html=True)
-                            with k2: st.markdown(f"<div class='kv'>⚡ <b>Urgency:</b> <span class='badge' style='background:{urg_color};'>{'High' if u=='high' else 'Normal'}</span></div>", unsafe_allow_html=True)
-                            with k3: st.markdown(f"<div class='kv'>🎯 <b>Criticality:</b> <span class='badge' style='background:#8b5cf6;'>{cr.capitalize()}</span></div>", unsafe_allow_html=True)
-                            with k4: st.markdown(f"<div class='kv'>📂 <b>Category:</b> <span class='chip'>{(row.get('category') or 'other').capitalize()}</span></div>", unsafe_allow_html=True)
-                            with k5: st.markdown(f"<div class='kv'>💬 <b>Sentiment:</b> <span class='badge' style='background:{sent_color};'>{s.capitalize()}</span></div>", unsafe_allow_html=True)
-                            with k6: st.markdown(f"<div class='kv'>📈 <b>Likely:</b> <span class='badge' style='background:{esc_color};'>{likely}</span></div>", unsafe_allow_html=True)
+                            with k1:
+                                st.markdown(
+                                    f"<div class='kv'>📛 <b>Severity:</b> "
+                                    f"<span class='badge' style='background:{sev_color};'>{sv.capitalize()}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
+                            with k2:
+                                st.markdown(
+                                    f"<div class='kv'>⚡ <b>Urgency:</b> "
+                                    f"<span class='badge' style='background:{urg_color};'>{'High' if u=='high' else 'Normal'}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
+                            with k3:
+                                st.markdown(
+                                    f"<div class='kv'>🎯 <b>Criticality:</b> "
+                                    f"<span class='badge' style='background:#8b5cf6;'>{cr.capitalize()}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
+                            with k4:
+                                st.markdown(
+                                    f"<div class='kv'>📂 <b>Category:</b> "
+                                    f"<span class='chip'>{(row.get('category') or 'other').capitalize()}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
+                            with k5:
+                                st.markdown(
+                                    f"<div class='kv'>💬 <b>Sentiment:</b> "
+                                    f"<span class='badge' style='background:{sent_color};'>{s.capitalize()}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
+                            with k6:
+                                st.markdown(
+                                    f"<div class='kv'>📈 <b>Likely:</b> "
+                                    f"<span class='badge' style='background:{esc_color};'>{likely}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
 
                             # Inline Status + Save
                             prefix = f"case_{case_id}"
-                            s1, s2, s3 = st.columns([1.5, 0.8, 1.2])
+                            s1, s2 = st.columns([1.5, 0.8])
                             with s1:
                                 cur = (row.get("status") or "Open").strip().title()
-                                new_status = st.selectbox("Status", ["Open","In Progress","Resolved"],
-                                                          index=["Open","In Progress","Resolved"].index(cur) if cur in ["Open","In Progress","Resolved"] else 0,
-                                                          key=f"{prefix}_status")
+                                new_status = st.selectbox(
+                                    "Status",
+                                    ["Open", "In Progress", "Resolved"],
+                                    index=["Open","In Progress","Resolved"].index(cur)
+                                          if cur in ["Open","In Progress","Resolved"] else 0,
+                                    key=f"{prefix}_status",
+                                )
                             with s2:
                                 if st.button("💾 Save", key=f"{prefix}_save"):
-                                    update_escalation_status(case_id, new_status,
-                                                             row.get("action_taken",""),
-                                                             row.get("owner",""),
-                                                             row.get("owner_email",""))
+                                    update_escalation_status(
+                                        case_id,
+                                        new_status,
+                                        row.get("action_taken", ""),
+                                        row.get("owner", ""),
+                                        row.get("owner_email", ""),
+                                    )
                                     st.success("✅ Saved")
-                            with s3:
-                                pass
 
-                            # Action/Owner/Owner Email (compact row)
+                            # Action / Owner / Owner Email (compact)
                             e1, e2, e3 = st.columns([1.8, 1.2, 1.5])
-                            with e1: act = st.text_input("Action Taken", row.get("action_taken",""), key=f"{prefix}_action")
-                            with e2: own = st.text_input("Owner", row.get("owner",""), key=f"{prefix}_owner")
-                            with e3: mail = st.text_input("Owner Email", row.get("owner_email",""), key=f"{prefix}_email")
+                            with e1:
+                                act = st.text_input("Action Taken", row.get("action_taken", ""), key=f"{prefix}_action")
+                            with e2:
+                                own = st.text_input("Owner", row.get("owner", ""), key=f"{prefix}_owner")
+                            with e3:
+                                mail = st.text_input("Owner Email", row.get("owner_email", ""), key=f"{prefix}_email")
 
-                            # N+1 (side-by-side)
+                            # N+1 side-by-side
                             n1a, n1b = st.columns([2.0, 1.0])
-                            with n1a: n1_email = st.text_input("N+1 Email ID", key=f"{prefix}_n1")
+                            with n1a:
+                                n1_email = st.text_input("N+1 Email ID", key=f"{prefix}_n1")
                             with n1b:
                                 if st.button("🚀 Escalate to N+1", key=f"{prefix}_n1btn"):
-                                    update_escalation_status(case_id, row.get("status","Open"), act or row.get("action_taken",""), own or row.get("owner",""), n1_email)
-                                    if n1_email: send_alert(f"Case {case_id} escalated to N+1.", via="email", recipient=n1_email)
+                                    update_escalation_status(
+                                        case_id,
+                                        row.get("status", "Open"),
+                                        act or row.get("action_taken", ""),
+                                        own or row.get("owner", ""),
+                                        n1_email,
+                                    )
+                                    if n1_email:
+                                        send_alert(f"Case {case_id} escalated to N+1.", via="email", recipient=n1_email)
                                     send_alert(f"Case {case_id} escalated to N+1.", via="teams")
+                    except Exception as e:
+                        st.error(f"Error rendering case #{row.get('id','Unknown')}: {e}")
 
     # ---------------- Tab 1: Likely ----------------
     with tabs[1]:
@@ -712,14 +830,17 @@ if page == "📊 Main Dashboard":
         d = df_all.copy()
         if not d.empty:
             m = train_model()
-            d["likely_calc"] = d.apply(lambda r: predict_escalation(m,
+            d["likely_calc"] = d.apply(lambda r: predict_escalation(
+                m,
                 (r.get("sentiment") or "neutral").lower(),
                 (r.get("urgency") or "normal").lower(),
                 (r.get("severity") or "minor").lower(),
-                (r.get("criticality") or "medium").lower()), axis=1)
-            d = d[d["likely_calc"]=="Yes"]
-        q2 = st.text_input("🔍 Search likely to escalate", placeholder="Search by ID, customer, issue, owner, email, status…")
-        st.dataframe(filter_df_by_query(d, q2).sort_values(by="timestamp", ascending=False), use_container_width=True)
+                (r.get("criticality") or "medium").lower()
+            ), axis=1)
+            d = d[d["likely_calc"] == "Yes"]
+        q2 = st.text_input("🔍 Search likely to escalate", placeholder="Search…")
+        d = _search(d, q2)
+        st.dataframe(d.sort_values(by="timestamp", ascending=False), use_container_width=True)
 
     # ---------------- Tab 2: Feedback ----------------
     with tabs[2]:
@@ -729,40 +850,48 @@ if page == "📊 Main Dashboard":
             d = d[d["likely_to_escalate"].notnull()]
             for _, r in d.iterrows():
                 with st.expander(f"🆔 {r['id']}"):
-                    fb   = st.selectbox("Escalation Accuracy", ["Correct","Incorrect"], key=f"fb_{r['id']}")
+                    fb   = st.selectbox("Escalation Accuracy", ["Correct", "Incorrect"], key=f"fb_{r['id']}")
                     sent = st.selectbox("Sentiment", ["positive","neutral","negative"], key=f"sent_{r['id']}")
                     crit = st.selectbox("Criticality", ["low","medium","high","urgent"], key=f"crit_{r['id']}")
                     notes= st.text_area("Notes", key=f"note_{r['id']}")
                     if st.button("Submit", key=f"btn_{r['id']}"):
                         owner_email = r.get("owner_email", EMAIL_USER)
-                        update_escalation_status(r['id'], r.get("status","Open"),
-                                                 r.get("action_taken",""), r.get("owner",""),
-                                                 owner_email, notes=notes, sentiment=sent, criticality=crit)
-                        if owner_email: send_alert("Feedback recorded on your case.", via="email", recipient=owner_email)
+                        update_escalation_status(
+                            r['id'], r.get("status","Open"),
+                            r.get("action_taken",""), r.get("owner",""),
+                            owner_email, notes=notes, sentiment=sent, criticality=crit
+                        )
+                        if owner_email:
+                            send_alert("Feedback recorded on your case.", via="email", recipient=owner_email)
                         st.success("Feedback saved.")
         if st.button("🔁 Retrain Model"):
             st.info("Retraining model…")
             m = train_model()
             st.success("Model retrained.") if m else st.warning("Not enough data to retrain.")
             if m:
-                try: show_feature_importance(m)
-                except Exception: pass
+                try:
+                    show_feature_importance(m)
+                except Exception:
+                    pass
 
     # ---------------- Tab 3: Summary Analytics ----------------
     with tabs[3]:
         st.subheader("📊 Summary Analytics")
-        try: render_analytics()
-        except Exception as e: st.info("Analytics module not fully configured."); st.exception(e)
+        try:
+            render_analytics()
+        except Exception as e:
+            st.info("Analytics module not fully configured.")
+            st.exception(e)
 
     # ---------------- Tab 4: Help ----------------
     with tabs[4]:
         st.subheader("ℹ️ How this Dashboard Works")
         st.markdown("""
-- **Kanban Columns:** **Open** (🟧), **In Progress** (🔵), **Resolved** (🟩).  
-- Click the **SESICE ID** to expand a case.  
-- Inside: **issue summary** (larger), **Age** chip, **inline KPI row** (Severity, Urgency, Criticality, Category, Sentiment, Likely), then **Status + Save** (same row), **Action/Owner/Email**, and **N+1 Email + Escalate**.
-- **Escalation View** includes **SLA Breach** to filter time-breached, high-priority, unresolved items.
-- **Likely to Escalate** = ML prediction (falls back to rule).
+- **Kanban:** Open (🟧), In Progress (🔵), Resolved (🟩)
+- **Expander:** SESICE ID → bigger summary, Age chip, single-line KPI row (Severity, Urgency, Criticality, Category, Sentiment, Likely)
+- **Status + Save** inline, then Action/Owner/Email, and N+1 Email + Escalate
+- **Escalation View** includes **SLA Breach** to filter unresolved high-priority items breaching 10 minutes
+- **Likely to Escalate** uses the model (falls back to rules if model not trained)
         """)
 
 elif page == "🔥 SLA Heatmap":
