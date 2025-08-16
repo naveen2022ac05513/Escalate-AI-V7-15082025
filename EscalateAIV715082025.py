@@ -1,4 +1,3 @@
-```python
 # EscalateAI_main.py
 # --------------------------------------------------------------------
 # EscalateAI — Customer Escalation Prediction & Management Tool
