@@ -1,12 +1,16 @@
-# EscalateAIV715082025.py
+# EscalateAIV610082025.py
 # --------------------------------------------------------------------
 # EscalateAI — Customer Escalation Prediction & Management Tool
 # Updates in this version:
-# • Help tab moved to the END of the tab list in Main Dashboard.
-# • Sidebar nav item renamed from "📈 Analytics" to "📈 Advanced Analytics".
-# • Routing updated to match the new label.
-# • Minor fix: used .title() (string) instead of .str.title() in one place.
-# • Counts remain inside status bars to avoid duplication.
+# • Help tab moved to LAST in the Main Dashboard.
+# • Sidebar item renamed to "📈 Advanced Analytics" (routing updated).
+# • Main Dashboard tab renamed to "📊 Summary Analytics" to avoid name clash.
+# • Bullet-proof duplicate detection:
+#     - DB columns: issue_hash, duplicate_of; table: processed_hashes
+#     - Exact hash match + TF-IDF cosine similarity + difflib fallback
+#     - De-duping applied to Email fetch, Excel ingestion, and background polling
+#     - Duplicates are skipped (not inserted) and audit-logged
+# • Counts stay inside status bars (no duplication).
 # --------------------------------------------------------------------
 
 # ======================
@@ -38,6 +42,16 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
+# For duplicate detection (optional; we also have a difflib fallback)
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+    _TFIDF_AVAILABLE = True
+except Exception:
+    _TFIDF_AVAILABLE = False
+
+import difflib
+
 from dotenv import load_dotenv
 
 # ==========================
@@ -53,7 +67,7 @@ try:
         schedule_weekly_retraining,
         render_analytics,
         show_feature_importance,
-        is_duplicate,
+        is_duplicate as _is_duplicate_ext,  # not used now; keeping for BC
         generate_pdf_report,
         render_sla_heatmap,
         apply_dark_mode,
@@ -74,7 +88,7 @@ try:
     from advanced_enhancements import (
         predict_resolution_eta,
         show_shap_explanation,
-        detect_cosine_duplicates,
+        detect_cosine_duplicates,  # not used; we provide built-in robust dedup
         link_email_threads,
         load_custom_plugins,
         send_whatsapp_message,
@@ -154,8 +168,28 @@ URGENCY_COLORS = {"high": "#DC143C", "normal": "#008000"}
 # Helper / DB Utils
 # ==================
 def summarize_issue_text(issue_text: str) -> str:
+    """Create a short summary to keep cards readable."""
     clean_text = re.sub(r'\s+', ' ', issue_text or "").strip()
     return clean_text[:120] + "..." if len(clean_text) > 120 else clean_text
+
+def _normalize_text(t: str) -> str:
+    """Normalization used for hashing & similarity."""
+    if not t:
+        return ""
+    patterns_to_remove = [
+        r"[-]+[ ]*Forwarded message[ ]*[-]+",
+        r"From:.*", r"Sent:.*", r"To:.*", r"Subject:.*",
+        r">.*", r"On .* wrote:",
+    ]
+    for pat in patterns_to_remove:
+        t = re.sub(pat, " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"\s+", " ", t).strip().lower()
+    return t
+
+def generate_issue_hash(issue_text: str) -> str:
+    """Stable hash on normalized text."""
+    clean_text = _normalize_text(issue_text or "")
+    return hashlib.md5(clean_text.encode()).hexdigest()
 
 def get_next_escalation_id() -> str:
     conn = sqlite3.connect(DB_PATH)
@@ -176,14 +210,17 @@ def get_next_escalation_id() -> str:
     return f"{ESCALATION_PREFIX}{str(next_num).zfill(5)}"
 
 def ensure_schema():
+    """Create/patch main table + dedup helper table."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
+        # Main table
         cur.execute('''
             CREATE TABLE IF NOT EXISTS escalations (
                 id TEXT PRIMARY KEY,
                 customer TEXT,
                 issue TEXT,
+                issue_hash TEXT,
                 sentiment TEXT,
                 urgency TEXT,
                 severity TEXT,
@@ -199,10 +236,13 @@ def ensure_schema():
                 likely_to_escalate TEXT,
                 action_owner TEXT,
                 status_update_date TEXT,
-                user_feedback TEXT
+                user_feedback TEXT,
+                duplicate_of TEXT
             )
         ''')
-        for col in ["owner_email", "status_update_date", "user_feedback", "likely_to_escalate", "action_owner", "priority"]:
+        # Add missing columns idempotently
+        for col in ["issue_hash", "duplicate_of", "owner_email", "status_update_date",
+                    "user_feedback", "likely_to_escalate", "action_owner", "priority"]:
             try:
                 cur.execute(f"SELECT {col} FROM escalations LIMIT 1")
             except Exception:
@@ -210,6 +250,15 @@ def ensure_schema():
                     cur.execute(f"ALTER TABLE escalations ADD COLUMN {col} TEXT")
                 except Exception:
                     traceback.print_exc()
+
+        # Processed hashes ledger (persists across restarts)
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS processed_hashes (
+                hash TEXT PRIMARY KEY,
+                first_seen TEXT
+            )
+        ''')
+
         conn.commit()
     except Exception:
         traceback.print_exc()
@@ -219,42 +268,23 @@ def ensure_schema():
         except Exception:
             pass
 
-def generate_issue_hash(issue_text: str) -> str:
-    patterns_to_remove = [
-        r"[-]+[ ]*Forwarded message[ ]*[-]+",
-        r"From:.*", r"Sent:.*", r"To:.*", r"Subject:.*",
-        r">.*",
-        r"On .* wrote:",
-        r"\n\s*\n"
-    ]
-    for pat in patterns_to_remove:
-        issue_text = re.sub(pat, "", issue_text or "", flags=re.IGNORECASE)
-    clean_text = re.sub(r'\s+', ' ', (issue_text or "").lower().strip())
-    return hashlib.md5(clean_text.encode()).hexdigest()
+def _processed_hash_exists(h: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM processed_hashes WHERE hash=? LIMIT 1", (h,))
+    row = cur.fetchone()
+    conn.close()
+    return row is not None
 
-def insert_escalation(customer, issue, sentiment, urgency, severity, criticality, category,
-                      escalation_flag, likely_to_escalate="No", owner_email=""):
-    ensure_schema()
-    new_id = get_next_escalation_id()
-    now = datetime.datetime.now().isoformat()
-    priority = "high" if str(severity).lower() == "critical" or str(urgency).lower() == "high" else "normal"
+def _mark_processed_hash(h: str):
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
-        cur.execute('''
-            INSERT INTO escalations (
-                id, customer, issue, sentiment, urgency, severity, criticality, category,
-                status, timestamp, action_taken, owner, owner_email, escalated, priority,
-                likely_to_escalate, action_owner, status_update_date, user_feedback
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            new_id, customer, issue, sentiment, urgency, severity, criticality, category,
-            "Open", now, "", "", owner_email or "", escalation_flag, priority,
-            likely_to_escalate, "", "", ""
-        ))
+        cur.execute("INSERT OR IGNORE INTO processed_hashes (hash, first_seen) VALUES (?, ?)",
+                    (h, datetime.datetime.now().isoformat()))
         conn.commit()
-    except Exception as e:
-        st.error(f"DB insert failed for {new_id}: {e}")
+    except Exception:
+        pass
     finally:
         try:
             conn.close()
@@ -272,6 +302,160 @@ def fetch_escalations() -> pd.DataFrame:
     finally:
         conn.close()
     return df
+
+# ===========================
+# Duplicate Detection (Core)
+# ===========================
+def _cosine_sim(a: str, b: str) -> float:
+    """Cosine similarity with TF-IDF (1–2 grams). Fallback to difflib if TF-IDF unavailable."""
+    a, b = _normalize_text(a), _normalize_text(b)
+    if not a or not b:
+        return 0.0
+    if _TFIDF_AVAILABLE:
+        try:
+            vec = TfidfVectorizer(ngram_range=(1, 2), min_df=1, stop_words="english")
+            X = vec.fit_transform([a, b])
+            sim = float(cosine_similarity(X[0], X[1]))
+            return sim
+        except Exception:
+            pass
+    # Fallback
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+def find_duplicate(issue_text: str, customer: str | None = None,
+                   days_window: int = 180,
+                   cosine_threshold: float = 0.88,
+                   difflib_threshold: float = 0.92):
+    """
+    Returns (is_duplicate: bool, duplicate_id: str|None, score: float).
+
+    Strategy:
+      1) Exact hash match on normalized text.
+      2) Cosine similarity (TF-IDF 1–2 grams) over recent records (<= days_window).
+      3) difflib ratio as a strict fallback.
+    """
+    ensure_schema()
+    text_norm = _normalize_text(issue_text or "")
+    if not text_norm:
+        return (False, None, 0.0)
+
+    h = hashlib.md5(text_norm.encode()).hexdigest()
+
+    # 1) Exact hash match first
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id, issue FROM escalations WHERE issue_hash = ? LIMIT 1", (h,))
+        row = cur.fetchone()
+        if row:
+            return (True, row[0], 1.0)
+
+        # 2) Candidate pool (recent N days)
+        df = pd.read_sql("SELECT id, issue, customer, timestamp FROM escalations", conn)
+    except Exception:
+        df = pd.DataFrame()
+    finally:
+        conn.close()
+
+    if df.empty:
+        return (False, None, 0.0)
+
+    # Filter to time window if timestamps exist
+    try:
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        cutoff = pd.Timestamp.now() - pd.Timedelta(days=days_window)
+        df = df[df['timestamp'].isna() | (df['timestamp'] >= cutoff)]
+    except Exception:
+        pass
+
+    # Optional: prioritize same customer
+    if customer and 'customer' in df.columns:
+        df_same = df[df['customer'].astype(str).str.lower() == str(customer).lower()]
+        df_pool = df_same if not df_same.empty else df
+    else:
+        df_pool = df
+
+    # Compute similarities and take the best
+    best_id, best_score = None, 0.0
+    for _, r in df_pool.iterrows():
+        other = r.get('issue', '')
+        score = _cosine_sim(issue_text, other)
+        if score > best_score:
+            best_score, best_id = score, r.get('id', None)
+
+    # Threshold decision
+    if _TFIDF_AVAILABLE and best_score >= cosine_threshold:
+        return (True, best_id, best_score)
+    elif (not _TFIDF_AVAILABLE) and best_score >= difflib_threshold:
+        return (True, best_id, best_score)
+    return (False, None, best_score)
+
+def insert_escalation(customer, issue, sentiment, urgency, severity,
+                      criticality, category, escalation_flag,
+                      likely_to_escalate="No", owner_email="", issue_hash=None,
+                      duplicate_of=None):
+    """
+    Insert a NEW escalation row (no duplicate checks here).
+    """
+    ensure_schema()
+    new_id = get_next_escalation_id()
+    now = datetime.datetime.now().isoformat()
+    priority = "high" if str(severity).lower() == "critical" or str(urgency).lower() == "high" else "normal"
+    issue_hash = issue_hash or generate_issue_hash(issue)
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute('''
+            INSERT INTO escalations (
+                id, customer, issue, issue_hash, sentiment, urgency, severity, criticality, category,
+                status, timestamp, action_taken, owner, owner_email, escalated, priority,
+                likely_to_escalate, action_owner, status_update_date, user_feedback, duplicate_of
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            new_id, customer, issue, issue_hash, sentiment, urgency, severity, criticality, category,
+            "Open", now, "", "", owner_email or "", escalation_flag, priority,
+            likely_to_escalate, "", "", "", duplicate_of
+        ))
+        conn.commit()
+    except Exception as e:
+        st.error(f"DB insert failed for {new_id}: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return new_id
+
+def add_or_skip_escalation(customer, issue,
+                           sentiment, urgency, severity, criticality, category,
+                           escalation_flag, likely_to_escalate="No", owner_email=""):
+    """
+    De-duplicating wrapper:
+      - If duplicate found: skip insertion, log audit, return (False, duplicate_id, score)
+      - Else: insert and return (True, new_id, 1.0)
+    """
+    h = generate_issue_hash(issue)
+    # If we've processed this exact normalized text before (email ingestion), skip early
+    if _processed_hash_exists(h):
+        return (False, None, 1.0)
+
+    is_dup, dup_id, score = find_duplicate(issue, customer=customer)
+    if is_dup and dup_id:
+        try:
+            log_escalation_action("duplicate_detected", dup_id, "system",
+                                  f"duplicate skipped; score={score:.3f}; customer={customer}")
+        except Exception:
+            pass
+        _mark_processed_hash(h)
+        return (False, dup_id, score)
+
+    # Not a duplicate — insert
+    new_id = insert_escalation(customer, issue, sentiment, urgency, severity, criticality,
+                               category, escalation_flag, likely_to_escalate, owner_email,
+                               issue_hash=h, duplicate_of=None)
+    _mark_processed_hash(h)
+    return (True, new_id, 1.0)
 
 def update_escalation_status(esc_id, status, action_taken, action_owner,
                              owner_email=None, feedback=None, sentiment=None,
@@ -306,16 +490,22 @@ def update_escalation_status(esc_id, status, action_taken, action_owner,
 # Email Utils
 # ============
 def parse_emails():
+    """
+    Fetch UNSEEN emails via IMAP, normalize, and return unique (customer, issue summary) entries.
+    We do NOT insert here; insertion happens via add_or_skip_escalation so that dedup is applied.
+    """
     emails_out = []
     conn = None
     try:
         if not EMAIL_USER:
             st.warning("Email credentials not configured. Set EMAIL_USER/EMAIL_PASS in .env")
             return emails_out
+
         conn = imaplib.IMAP4_SSL(EMAIL_SERVER)
         conn.login(EMAIL_USER, EMAIL_PASS)
         conn.select("inbox")
         _, messages = conn.search(None, "UNSEEN")
+
         for num in messages[0].split():
             _, msg_data = conn.fetch(num, "(RFC822)")
             for response_part in msg_data:
@@ -325,6 +515,7 @@ def parse_emails():
                     if isinstance(subject, bytes):
                         subject = subject.decode(errors='ignore')
                     from_ = msg.get("From", "unknown")
+
                     body = ""
                     if msg.is_multipart():
                         for part in msg.walk():
@@ -339,12 +530,19 @@ def parse_emails():
                             body = msg.get_payload(decode=True).decode(errors='ignore')
                         except Exception:
                             body = ""
+
                     full_text = f"{subject} - {body}"
+                    summary = summarize_issue_text(full_text)
+
+                    # Use both: summary for UI, and normalized hash for ledger
                     hash_val = generate_issue_hash(full_text)
-                    if hash_val not in global_seen_hashes:
-                        global_seen_hashes.add(hash_val)
-                        summary = summarize_issue_text(full_text)
-                        emails_out.append({"customer": from_, "issue": summary})
+
+                    # Guard against repeated fetch within same session
+                    if hash_val in global_seen_hashes:
+                        continue
+                    global_seen_hashes.add(hash_val)
+
+                    emails_out.append({"customer": from_, "issue": summary, "raw_hash": hash_val})
     except Exception as e:
         st.error(f"Failed to parse emails: {e}")
     finally:
@@ -359,6 +557,7 @@ def parse_emails():
 # NLP/Tags
 # ==========
 def analyze_issue(issue_text: str):
+    """Rules-based tagging for sentiment, urgency, category, severity, criticality, escalation flag."""
     scores = analyzer.polarity_scores(issue_text or "")
     compound = scores["compound"]
     if compound < -0.05:
@@ -367,19 +566,23 @@ def analyze_issue(issue_text: str):
         sentiment = "positive"
     else:
         sentiment = "neutral"
+
     text_lower = (issue_text or "").lower()
     urgency = "high" if any(word in text_lower for cat in NEGATIVE_KEYWORDS.values() for word in cat) else "normal"
+
     category = None
     for cat, keywords in NEGATIVE_KEYWORDS.items():
         if any(k in text_lower for k in keywords):
             category = cat
             break
+
     if category in ["safety", "technical"]:
         severity = "critical"
     elif category in ["support", "business"]:
         severity = "major"
     else:
         severity = "minor"
+
     criticality = "high" if (sentiment == "negative" and urgency == "high") else "medium"
     escalation_flag = "Yes" if (urgency == "high" or sentiment == "negative") else "No"
     return sentiment, urgency, severity, criticality, category or "other", escalation_flag
@@ -388,6 +591,7 @@ def analyze_issue(issue_text: str):
 # ML Model
 # =========
 def train_model():
+    """Train small RF model when enough data exists; else return None (falls back to rules)."""
     df = fetch_escalations()
     if df.shape[0] < 20:
         return None
@@ -404,6 +608,7 @@ def train_model():
     return model
 
 def predict_escalation(model, sentiment, urgency, severity, criticality):
+    """Yes/No prediction using model; else 2-of-3 risk fallback."""
     if model is None:
         risk_severity = str(severity).lower() in ["critical", "high"]
         risk_urgency = str(urgency).lower() in ["high", "immediate"]
@@ -458,6 +663,9 @@ def send_alert(message: str, via: str = "email", recipient: str | None = None):
 # Background Email Polling
 # ===========================
 def email_polling_job():
+    """
+    Background loop: checks inbox every 60s, analyzes new emails, de-dups, inserts.
+    """
     while True:
         model = train_model()
         emails = parse_emails()
@@ -467,7 +675,11 @@ def email_polling_job():
                 customer = e["customer"]
                 sent, urg, sev, crit, cat, esc = analyze_issue(issue)
                 likely_to_escalate = predict_escalation(model, sent, urg, sev, crit)
-                insert_escalation(customer, issue, sent, urg, sev, crit, cat, esc, likely_to_escalate)
+                created, new_or_dup_id, score = add_or_skip_escalation(
+                    customer, issue, sent, urg, sev, crit, cat, esc, likely_to_escalate
+                )
+                # (Optional) You can show a toast in Streamlit logs:
+                # st.toast(f"{'New' if created else 'Dup'}: {new_or_dup_id} (score={score:.2f})")
         time.sleep(60)
 
 # ================
@@ -521,8 +733,11 @@ if st.sidebar.button("Fetch Emails"):
         issue, customer = e["issue"], e["customer"]
         sentiment, urgency, severity, criticality, category, escalation_flag = analyze_issue(issue)
         likely_to_escalate = predict_escalation(model, sentiment, urgency, severity, criticality)
-        insert_escalation(customer, issue, sentiment, urgency, severity, criticality, category, escalation_flag, likely_to_escalate)
-    st.sidebar.success(f"✅ {len(emails)} emails processed")
+        created, new_or_dup_id, score = add_or_skip_escalation(
+            customer, issue, sentiment, urgency, severity, criticality, category,
+            escalation_flag, likely_to_escalate
+        )
+    st.sidebar.success(f"✅ Processed {len(emails)} unread email(s). De-dup applied.")
 
 # Sidebar: Upload & Analyze
 st.sidebar.header("📁 Upload Escalation Sheet")
@@ -541,7 +756,7 @@ if uploaded_file:
         st.stop()
     if st.sidebar.button("🔍 Analyze & Insert"):
         model = train_model()
-        processed_count = 0
+        processed_count, dup_count = 0, 0
         for idx, row in df_excel.iterrows():
             issue = str(row.get("Issue", "")).strip()
             customer = str(row.get("Customer", "Unknown")).strip()
@@ -549,12 +764,17 @@ if uploaded_file:
                 st.warning(f"⚠️ Row {idx + 1} skipped: empty issue text.")
                 continue
             issue_summary = summarize_issue_text(issue)
-            sentiment, urgency, severity, criticality, category, escalation_flag = analyze_issue(issue)
+            sentiment, urgency, severity, criticality, category, escalation_flag = analyze_issue(issue_summary)
             likely_to_escalate = predict_escalation(model, sentiment, urgency, severity, criticality)
-            insert_escalation(customer, issue_summary, sentiment, urgency, severity, criticality, category,
-                              escalation_flag, likely_to_escalate)
-            processed_count += 1
-        st.sidebar.success(f"🎯 {processed_count} rows processed successfully.")
+            created, new_or_dup_id, score = add_or_skip_escalation(
+                customer, issue_summary, sentiment, urgency, severity, criticality, category,
+                escalation_flag, likely_to_escalate
+            )
+            if created:
+                processed_count += 1
+            else:
+                dup_count += 1
+        st.sidebar.success(f"🎯 {processed_count} new row(s) inserted. 🧹 {dup_count} duplicate(s) skipped.")
 
 # Sidebar: SLA Monitor
 st.sidebar.markdown("### ⏰ SLA Monitor")
@@ -676,6 +896,7 @@ if st.sidebar.button("📄 Generate PDF Report"):
 # Utility: Search filtering
 # ===============================
 def filter_df_by_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
+    """Simple full-text search across common fields."""
     if not query:
         return df
     q = str(query).strip().lower()
@@ -685,7 +906,7 @@ def filter_df_by_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
             'category','severity','sentiment','status']
     present = [c for c in cols if c in df.columns]
     combined = df[present].astype(str).apply(lambda s: s.str.lower()).agg(' '.join, axis=1)
-    return df[combined.str_contains(q, na=False, regex=False)] if hasattr(combined, "str_contains") else df[combined.str.contains(q, na=False, regex=False)]
+    return df[combined.str.contains(q, na=False, regex=False)]
 
 # ===============================
 # Main Page Routing
@@ -714,8 +935,8 @@ if page == "📊 Main Dashboard":
             unsafe_allow_html=True
         )
 
-    # Tabs — HELP moved to the LAST tab now
-    tabs = st.tabs(["🗃️ All", "🚩 Likely to Escalate", "🔁 Feedback & Retraining", "📊 Analytics", "ℹ️ How this Dashboard Works"])
+    # Tabs — Help moved to LAST; Analytics renamed to Summary Analytics
+    tabs = st.tabs(["🗃️ All", "🚩 Likely to Escalate", "🔁 Feedback & Retraining", "📊 Summary Analytics", "ℹ️ How this Dashboard Works"])
 
     # --------------------- Tab 0: All ---------------------
     with tabs[0]:
@@ -726,6 +947,9 @@ if page == "📊 Main Dashboard":
         counts = df_view['status'].value_counts()
         col1, col2, col3 = st.columns(3)
         status_columns = {"Open": col1, "In Progress": col2, "Resolved": col3}
+
+        # Train model once per render
+        model_for_view = train_model()
 
         for status_name, col in status_columns.items():
             with col:
@@ -739,12 +963,11 @@ if page == "📊 Main Dashboard":
                 for _, row in bucket.iterrows():
                     try:
                         summary = summarize_issue_text(row.get('issue', ''))
-                        model = train_model()
                         sentiment = (row.get("sentiment") or "neutral").lower()
                         urgency = (row.get("urgency") or "normal").lower()
                         severity = (row.get("severity") or "minor").lower()
                         criticality = (row.get("criticality") or "medium").lower()
-                        likely_to_escalate = predict_escalation(model, sentiment, urgency, severity, criticality)
+                        likely_to_escalate = predict_escalation(model_for_view, sentiment, urgency, severity, criticality)
                         flag = "🚩" if likely_to_escalate == 'Yes' else ""
                         expander_label = f"{row.get('id', 'N/A')} - {row.get('customer', 'Unknown')} {flag} – {summary}"
                         prefix = f"case_{row.get('id', 'N/A')}"
@@ -930,16 +1153,16 @@ Please review the updates on the EscalateAI dashboard.
             else:
                 st.warning("Not enough data to retrain model.")
 
-    # ----------------- Tab 3: Analytics -----------------
+    # ----------------- Tab 3: Summary Analytics -----------------
     with tabs[3]:
-        st.subheader("📊 Escalation Analytics (Quick View)")
+        st.subheader("📊 Summary Analytics")
         try:
             render_analytics()
         except Exception as e:
             st.info("Analytics module not fully configured.")
             st.exception(e)
 
-    # ----------------- Tab 4: Help (moved to LAST) -----------------
+    # ----------------- Tab 4: Help (LAST) -----------------
     with tabs[4]:
         st.subheader("ℹ️ How this Dashboard Works")
         st.markdown("""
