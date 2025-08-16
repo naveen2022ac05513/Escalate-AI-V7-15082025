@@ -4,9 +4,11 @@
 # --------------------------------------------------------------------
 # Key updates in this build:
 # • Header row: Escalation View + SLA capsule + AI Summary on one line
-# • Below header: Total (filtered) pill on left + **Search label visible**
-# • Sidebar: MS Teams & Email composer; WhatsApp & SMS allowed only for Resolved
-# • Feedback & Retraining: **6 cases per page**, 3-column grid (2 rows × 3 cols)
+# • Below header: **Total (filtered)** + **Search** with visible label
+#   -> Search block moved up (reduced top margin) to remove extra gap
+# • Sidebar: Teams/Email composer; WhatsApp & SMS allowed only for Resolved
+# • Feedback & Retraining: **18 cases per page**, 3-column grid (6 rows × 3)
+#   with each case in a **collapsed expander**
 # • BU/Region filters in sidebar; totals/kanban reflect applied filters
 # • BU/Region columns stored in DB; schema migration handled
 # • Charts with value labels for BU/Region
@@ -493,6 +495,10 @@ st.markdown("""
   .controls-panel .stButton>button{
     height:40px !important; border-radius:10px !important; padding:0 14px !important;
   }
+
+  /* Tighter search block to pull it upward a bit */
+  .search-tight { margin-top:-8px !important; }
+  .search-tight label { margin-bottom:4px !important; }
 </style>
 <div class="sticky-header"><h1>🚨 EscalateAI – AI Based Customer Escalation Prediction & Management Tool</h1></div>
 """, unsafe_allow_html=True)
@@ -737,14 +743,16 @@ if page == "📊 Main Dashboard":
             total = len(dfvv); open_c = (s=="Open").sum(); ip_c = (s=="In Progress").sum(); res_c = (s=="Resolved").sum()
             return f"Total: {total}  |  Open: {open_c}  |  In Progress: {ip_c}  |  Resolved: {res_c}"
 
-        # --- Row B: Total left + **Search with visible label** right ---
+        # --- Row B: Total left + **Search** right (tighter top margin) ---
         rowB_l, rowB_r = st.columns([0.55, 0.45])
         with rowB_r:
+            st.markdown("<div class='search-tight'>", unsafe_allow_html=True)
             q = st.text_input(
                 "🔎 Search",
                 placeholder="ID, customer, issue, owner, email, status, BU, region…",
                 key="search_cases"
             )
+            st.markdown("</div>", unsafe_allow_html=True)
 
         # Build final view
         view = filter_df_by_query(base, q)
@@ -895,8 +903,8 @@ if page == "📊 Main Dashboard":
             st.info("No cases available.")
         else:
             d = d.sort_values(by="timestamp", ascending=False).reset_index(drop=True)
-            # show **6** cases per page
-            per_page = 6
+            # show **18** cases per page
+            per_page = 18
             if "fb_page" not in st.session_state: st.session_state.fb_page = 0
             total_pages = max(1, (len(d) + per_page - 1) // per_page)
 
@@ -913,12 +921,12 @@ if page == "📊 Main Dashboard":
             start = st.session_state.fb_page * per_page
             slice_df = d.iloc[start:start+per_page]
 
-            # 3 columns layout; up to 6 items -> 2 rows × 3 cols
+            # 3 columns layout; up to 18 items -> stacks 6 rows × 3 cols (collapsed expanders)
             grid_cols = st.columns(3)
             for i, (idx, r) in enumerate(slice_df.iterrows()):
                 col = grid_cols[i % 3]
                 with col:
-                    with st.expander(f"🆔 {r['id']}", expanded=True):
+                    with st.expander(f"🆔 {r['id']}", expanded=False):
                         fb   = st.selectbox("Escalation Accuracy", ["Correct","Incorrect"], key=f"fb_{r['id']}")
                         sent = st.selectbox("Sentiment", ["positive","neutral","negative"], key=f"sent_{r['id']}")
                         crit = st.selectbox("Criticality", ["low","medium","high","urgent"], key=f"crit_{r['id']}")
@@ -952,7 +960,7 @@ if page == "📊 Main Dashboard":
         st.subheader("ℹ️ How this Dashboard Works")
         st.markdown("""
 - **Header row:** Escalation View + SLA breach capsule + AI summary
-- **Totals/Search row:** **Total (filtered)** pill on the left; **Search** label above the box on the right
+- **Totals/Search row:** **Total (filtered)** pill on the left; **Search** label above the box on the right (pulled upward for a tighter gap)
 - **Kanban Columns:** Open (🟧), In Progress (🔵), Resolved (🟩)
 - **Expander layout:**
   - Issue summary + age chip
