@@ -6,19 +6,20 @@
 #   from enhancement_dashboard import show_enhancement_dashboard
 #   show_enhancement_dashboard()
 #
-# - Reads from SQLite (escalations.db) directly; no imports from main
-# - Robust to low-data / missing columns
-# - KPIs: Total / Open / In Progress / Resolved
-# - Labelled bar charts for BU & Region distributions
-# - Daily trend and status mix
-# - Optional “Model Debug” (RandomForest) + optional SHAP (if installed)
+# Reads from SQLite (escalations.db) directly; no imports from main
+# Robust to low-data / missing columns
+# KPIs: Total / Open / In Progress / Resolved
+# Labelled bar charts for BU & Region distributions
+# Daily trend and status mix
+# Optional “Model Debug” (RandomForest) + optional SHAP (if installed)
 # -------------------------------------------------------------------
 
 import os
 import sqlite3
 from typing import Optional
 
-import pandas as pd  # <-- fixes NameError
+# ✅ ensure pandas is defined early
+import pandas as pd
 import numpy as np
 import streamlit as st
 import altair as alt
@@ -37,7 +38,6 @@ except Exception:
     _HAS_SHAP = False
 
 DB_PATH = os.getenv("DB_PATH", "escalations.db")
-
 
 # ------------------------- Data Loading ------------------------- #
 @st.cache_data(show_spinner=False)
@@ -69,16 +69,13 @@ def load_escalations(db_path: str = DB_PATH) -> pd.DataFrame:
         if c in df.columns:
             df[c] = df[c].astype(str)
 
-    # Friendly casing for status
     if "status" in df.columns:
         df["status"] = df["status"].str.strip().str.title()
 
-    # Ensure BU codes like SPIBS/PSIBS/etc. stay uppercase
     if "bu_code" in df.columns:
         df["bu_code"] = df["bu_code"].str.strip().str.upper()
 
     return df
-
 
 # ------------------------- Small utils ------------------------- #
 def _kpi(label: str, value: int, help_text: Optional[str] = None):
@@ -98,9 +95,7 @@ def _labelled_bar(df_counts: pd.DataFrame, x: str, y: str, title: str):
         tooltip=[x, y],
     ).properties(height=280, title=title)
 
-    labels = alt.Chart(df_counts).mark_text(
-        dy=-6
-    ).encode(
+    labels = alt.Chart(df_counts).mark_text(dy=-6).encode(
         x=alt.X(f"{x}:N", sort='-y'),
         y=alt.Y(f"{y}:Q"),
         text=f"{y}:Q"
@@ -113,17 +108,13 @@ def _value_counts_frame(df: pd.DataFrame, col: str, top_n: Optional[int] = None)
     if col not in df.columns:
         return pd.DataFrame({col: [], "count": []})
     vc = (
-        df[col]
-        .fillna("")
-        .replace({"nan": ""})
-        .value_counts(dropna=False)
-        .reset_index()
+        df[col].fillna("").replace({"nan": ""})
+        .value_counts(dropna=False).reset_index()
         .rename(columns={"index": col, col: "count"})
     )
     if top_n is not None:
         vc = vc.head(top_n)
     return vc
-
 
 # --------------------- Enhancement Dashboard -------------------- #
 def show_enhancement_dashboard():
@@ -144,90 +135,69 @@ def show_enhancement_dashboard():
 
     # ---------------- Distributions ---------------- #
     st.subheader("📦 Distribution Snapshots")
-
     d1, d2 = st.columns(2)
-    with d1:
-        bu_counts = _value_counts_frame(df, "bu_code")
-        _labelled_bar(bu_counts, "bu_code", "count", "BU Distribution (labelled)")
-
-    with d2:
-        reg_counts = _value_counts_frame(df, "region")
-        _labelled_bar(reg_counts, "region", "count", "Region Distribution (labelled)")
+    with d1: _labelled_bar(_value_counts_frame(df, "bu_code"), "bu_code", "count", "BU Distribution")
+    with d2: _labelled_bar(_value_counts_frame(df, "region"), "region", "count", "Region Distribution")
 
     # ---------------- Daily Trends ---------------- #
     st.subheader("📈 Daily Trend")
     if "timestamp" in df.columns and df["timestamp"].notna().any():
         day = df["timestamp"].dt.date
         trend = pd.DataFrame({"date": day}).value_counts().reset_index(name="count").sort_values("date")
-        trend_chart = alt.Chart(trend).mark_line(point=True).encode(
-            x=alt.X("date:T", title="Date"),
-            y=alt.Y("count:Q", title="Cases"),
-            tooltip=["date:T", "count:Q"],
+        chart = alt.Chart(trend).mark_line(point=True).encode(
+            x="date:T", y="count:Q", tooltip=["date:T", "count:Q"]
         ).properties(height=280, title="Total Cases per Day")
-        st.altair_chart(trend_chart, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
     else:
         st.info("No timestamps to compute daily trend.")
 
-    # ---------------- Status Mix (Stacked by Day) ---------------- #
+    # ---------------- Status Mix ---------------- #
     st.subheader("🧩 Status Mix by Day")
-    if "timestamp" in df.columns and "status" in df.columns and df["timestamp"].notna().any():
+    if {"timestamp", "status"} <= set(df.columns) and df["timestamp"].notna().any():
         tmp = df.copy()
         tmp["date"] = tmp["timestamp"].dt.date
         mix = tmp.groupby(["date", "status"]).size().reset_index(name="count")
-        mix_chart = alt.Chart(mix).mark_bar().encode(
-            x=alt.X("date:T", title="Date"),
-            y=alt.Y("count:Q", stack="zero", title="Cases"),
-            color=alt.Color("status:N", title="Status"),
-            tooltip=["date:T", "status:N", "count:Q"],
+        chart = alt.Chart(mix).mark_bar().encode(
+            x="date:T", y="count:Q", color="status:N",
+            tooltip=["date:T", "status:N", "count:Q"]
         ).properties(height=280, title="Stacked Status per Day")
-        st.altair_chart(mix_chart, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
     else:
         st.info("Insufficient data for status mix.")
 
     # ---------------- Model Debug ---------------- #
     st.subheader("🧪 Model Debug (experimental)")
-    needed_cols = {"sentiment", "urgency", "severity", "criticality", "likely_to_escalate"}
-    if not needed_cols.issubset(set(df.columns)):
-        st.caption("Missing columns for model debug. Need: " + ", ".join(sorted(needed_cols)))
+    needed = {"sentiment", "urgency", "severity", "criticality", "likely_to_escalate"}
+    if not needed.issubset(df.columns):
+        st.caption("Missing columns for model debug. Need: " + ", ".join(sorted(needed)))
         return
 
-    # Prepare data
-    df_md = df.dropna(subset=list(needed_cols)).copy()
+    df_md = df.dropna(subset=list(needed)).copy()
     if df_md.empty or df_md["likely_to_escalate"].nunique() < 2:
-        st.caption("Not enough labelled variation in 'likely_to_escalate' to train a model.")
+        st.caption("Not enough variation in 'likely_to_escalate' to train.")
         return
 
     X = pd.get_dummies(df_md[["sentiment", "urgency", "severity", "criticality"]])
     y = df_md["likely_to_escalate"].astype(str).str.lower().eq("yes").astype(int)
 
     if (not _HAS_SK) or len(df_md) < 30:
-        st.caption("Need scikit-learn and at least ~30 labelled rows to show feature importances.")
+        st.caption("Need scikit-learn and ~30 labelled rows to show importances.")
         return
 
-    # Train a tiny RF for insight
     rf = RandomForestClassifier(random_state=42)
     rf.fit(X, y)
 
-    fi = (
-        pd.DataFrame({"feature": X.columns, "importance": rf.feature_importances_})
-        .sort_values("importance", ascending=False)
-        .head(20)
-    )
-
-    fi_chart = alt.Chart(fi).mark_bar().encode(
-        x=alt.X("importance:Q", title="Importance"),
-        y=alt.Y("feature:N", sort='-x', title="Feature"),
-        tooltip=["feature:N", alt.Tooltip("importance:Q", format=".3f")],
-        color=alt.Color("feature:N", legend=None),
+    fi = pd.DataFrame({"feature": X.columns, "importance": rf.feature_importances_}).sort_values("importance", ascending=False).head(20)
+    chart = alt.Chart(fi).mark_bar().encode(
+        x="importance:Q", y=alt.Y("feature:N", sort='-x'),
+        tooltip=["feature:N", "importance:Q"], color="feature:N"
     ).properties(height=360, title="Top Feature Importances")
     labels = alt.Chart(fi).mark_text(align='left', dx=4).encode(
-        x=alt.X("importance:Q"),
-        y=alt.Y("feature:N", sort='-x'),
+        x="importance:Q", y=alt.Y("feature:N", sort='-x'),
         text=alt.Text("importance:Q", format=".3f"),
     )
-    st.altair_chart(fi_chart + labels, use_container_width=True)
+    st.altair_chart(chart + labels, use_container_width=True)
 
-    # Optional SHAP (if shap available)
     st.markdown("**📊 SHAP Plot** (if `shap` is installed)")
     if _HAS_SHAP:
         try:
@@ -237,6 +207,6 @@ def show_enhancement_dashboard():
             shap.summary_plot(shap_vals[1] if isinstance(shap_vals, list) else shap_vals, X, show=False)
             st.pyplot(bbox_inches="tight", clear_figure=True)
         except Exception as e:
-            st.caption(f"SHAP could not render ({type(e).__name__}).")
+            st.caption(f"SHAP failed ({type(e).__name__}).")
     else:
         st.caption("Install `shap` to view SHAP plots: `pip install shap`")
