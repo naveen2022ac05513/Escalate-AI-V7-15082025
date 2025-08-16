@@ -683,69 +683,113 @@ if page == "📊 Main Dashboard":
                             with r0a:
                                 st.markdown(f"<div class='summary'>{summary}</div>", unsafe_allow_html=True)
                             with r0b:
-                                st.markdown(f"<div style='text-align:right;'><span class='age' style='background:{age_col};'>Age: {age_str}</span></div>", unsafe_allow_html=True)
-
-                            # --- KPI PANEL (two rows) ---
+                                st.markdown(
+                                    f"<div style='text-align:right;'><span class='age' style='background:{age_col};'>Age: {age_str}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
+                        
+                            # ---------- KPI PANEL ----------
                             st.markdown("<div class='kpi-panel'>", unsafe_allow_html=True)
+                        
+                            # KPI Row 1: Severity | Urgency | Criticality
                             ka1, ka2, ka3 = st.columns(3)
                             with ka1:
-                                st.markdown(f"<div class='kv'>📛 <span class='field'>Severity</span> <span class='tag-pill' style='--c:{sev_color}; border-color:{sev_color}; color:{sev_color};'>{sv.capitalize()}</span></div>", unsafe_allow_html=True)
+                                st.markdown(
+                                    f"<div class='kv'>📛 <b>Severity</b> "
+                                    f"<span class='tag-pill' style='--c:{sev_color}; border-color:{sev_color}; color:{sev_color};'>{sv.capitalize()}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
                             with ka2:
-                                st.markdown(f"<div class='kv'>⚡ <span class='field'>Urgency</span> <span class='tag-pill' style='--c:{urg_color}; border-color:{urg_color}; color:{urg_color};'>{'High' if u=='high' else 'Normal'}</span></div>", unsafe_allow_html=True)
+                                st.markdown(
+                                    f"<div class='kv'>⚡ <b>Urgency</b> "
+                                    f"<span class='tag-pill' style='--c:{urg_color}; border-color:{urg_color}; color:{urg_color};'>{'High' if u=='high' else 'Normal'}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
                             with ka3:
-                                st.markdown(f"<div class='kv'>🎯 <span class='field'>Criticality</span> <span class='tag-pill' style='--c:#8b5cf6; border-color:#8b5cf6; color:#8b5cf6;'>{cr.capitalize()}</span></div>", unsafe_allow_html=True)
-
-                            st.markdown("<div class='rowpad'></div>", unsafe_allow_html=True)
-
+                                st.markdown(
+                                    f"<div class='kv'>🎯 <b>Criticality</b> "
+                                    f"<span class='tag-pill' style='--c:#8b5cf6; border-color:#8b5cf6; color:#8b5cf6;'>{cr.capitalize()}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
+                        
+                            # Bigger gap between KPI rows
+                            st.markdown("<div class='kpi-gap'></div>", unsafe_allow_html=True)
+                        
+                            # KPI Row 2: Category | Sentiment | Likely
                             kb1, kb2, kb3 = st.columns(3)
                             with kb1:
-                                st.markdown(f"<div class='kv'>📂 <span class='field'>Category</span> <span class='tag-pill'>{(row.get('category') or 'other').capitalize()}</span></div>", unsafe_allow_html=True)
+                                st.markdown(
+                                    f"<div class='kv'>📂 <b>Category</b> "
+                                    f"<span class='tag-pill'>{(row.get('category') or 'other').capitalize()}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
                             with kb2:
-                                st.markdown(f"<div class='kv'>💬 <span class='field'>Sentiment</span> <span class='tag-pill' style='--c:{sent_color}; border-color:{sent_color}; color:{sent_color};'>{s.capitalize()}</span></div>", unsafe_allow_html=True)
+                                st.markdown(
+                                    f"<div class='kv'>💬 <b>Sentiment</b> "
+                                    f"<span class='tag-pill' style='--c:{sent_color}; border-color:{sent_color}; color:{sent_color};'>{s.capitalize()}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
                             with kb3:
-                                st.markdown(f"<div class='kv'>📈 <span class='field'>Likely</span> <span class='tag-pill' style='--c:{esc_color}; border-color:{esc_color}; color:{esc_color};'>{likely}</span></div>", unsafe_allow_html=True)
+                                st.markdown(
+                                    f"<div class='kv'>📈 <b>Likely</b> "
+                                    f"<span class='tag-pill' style='--c:{esc_color}; border-color:{esc_color}; color:{esc_color};'>{likely}</span></div>",
+                                    unsafe_allow_html=True,
+                                )
                             st.markdown("</div>", unsafe_allow_html=True)  # /kpi-panel
-
-                            # Divider then controls panel
+                        
+                            # Divider then CONTROLS (all in one row, incl. N+1)
                             st.markdown("<hr class='soft-hr' />", unsafe_allow_html=True)
                             st.markdown("<div class='controls-panel'>", unsafe_allow_html=True)
-
-                            # Status + dropdown + Save in one row
+                        
                             prefix = f"case_{case_id}"
-                            status_lbl, status_dd, status_save = st.columns([0.35, 1.4, 0.7])
-                            with status_lbl:
+                        
+                            # One compact row: Status label | Status dropdown | Save | N+1 Email | Escalate
+                            c_lbl, c_dd, c_save, c_n1, c_n1btn = st.columns([0.35, 1.1, 0.65, 1.2, 0.9])
+                            with c_lbl:
                                 st.markdown("<div class='field-label-inline'>Status</div>", unsafe_allow_html=True)
-                            with status_dd:
-                                cur = (row.get("status") or "Open").strip().title()
+                            with c_dd:
+                                cur = (row.get("status") or "Open").strip().str.title()
                                 new_status = st.selectbox(
-                                    "", ["Open","In Progress","Resolved"],
+                                    label="",
+                                    options=["Open", "In Progress", "Resolved"],
                                     index=["Open","In Progress","Resolved"].index(cur) if cur in ["Open","In Progress","Resolved"] else 0,
-                                    key=f"{prefix}_status", label_visibility="collapsed"
+                                    key=f"{prefix}_status",
+                                    label_visibility="collapsed",
                                 )
-                            with status_save:
-                                save_container = st.container()
-                                with save_container:
-                                    if st.button("💾 Save", key=f"{prefix}_save"):
-                                        update_escalation_status(case_id, new_status, row.get("action_taken",""), row.get("owner",""), row.get("owner_email",""))
-                                        st.success("✅ Saved")
-                                st.markdown("<div class='btn-save'></div>", unsafe_allow_html=True)
-
-                            # Action / Owner / Owner Email
-                            e1, e2, e3 = st.columns([1.8, 1.2, 1.6])
-                            with e1: act  = st.text_input("Action Taken", row.get("action_taken",""), key=f"{prefix}_action")
-                            with e2: own  = st.text_input("Owner", row.get("owner",""), key=f"{prefix}_owner")
-                            with e3: mail = st.text_input("Owner Email", row.get("owner_email",""), key=f"{prefix}_email")
-
-                            # N+1 controls side-by-side
-                            n1a, n1b = st.columns([2.0, 1.0])
-                            with n1a: n1_email = st.text_input("N+1 Email ID", key=f"{prefix}_n1")
-                            with n1b:
+                            with c_save:
+                                if st.button("💾 Save", key=f"{prefix}_save"):
+                                    update_escalation_status(
+                                        case_id, new_status,
+                                        row.get("action_taken",""),
+                                        row.get("owner",""),
+                                        row.get("owner_email",""),
+                                    )
+                                    st.success("✅ Saved")
+                            with c_n1:
+                                n1_email = st.text_input("N+1 Email ID", key=f"{prefix}_n1")
+                            with c_n1btn:
                                 if st.button("🚀 Escalate to N+1", key=f"{prefix}_n1btn"):
-                                    update_escalation_status(case_id, row.get("status","Open"), act or row.get("action_taken",""), own or row.get("owner",""), n1_email)
-                                    if n1_email: send_alert(f"Case {case_id} escalated to N+1.", via="email", recipient=n1_email)
+                                    update_escalation_status(
+                                        case_id, row.get("status","Open"),
+                                        row.get("action_taken",""),
+                                        row.get("owner",""),
+                                        n1_email
+                                    )
+                                    if n1_email:
+                                        send_alert(f"Case {case_id} escalated to N+1.", via="email", recipient=n1_email)
                                     send_alert(f"Case {case_id} escalated to N+1.", via="teams")
-
+                        
+                            # Second row: Action / Owner / Owner Email (kept tidy)
+                            e1, e2, e3 = st.columns([1.8, 1.2, 1.6])
+                            with e1:
+                                act = st.text_input("Action Taken", row.get("action_taken",""), key=f"{prefix}_action")
+                            with e2:
+                                own = st.text_input("Owner", row.get("owner",""), key=f"{prefix}_owner")
+                            with e3:
+                                mail = st.text_input("Owner Email", row.get("owner_email",""), key=f"{prefix}_email")
+                        
                             st.markdown("</div>", unsafe_allow_html=True)  # /controls-panel
+
                     except Exception as e:
                         st.error(f"Error rendering case #{row.get('id','Unknown')}: {e}")
 
