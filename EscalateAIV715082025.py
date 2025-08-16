@@ -338,7 +338,12 @@ def fetch_escalations() -> pd.DataFrame:
         st.error(f"Error reading escalations table: {e}"); df = pd.DataFrame()
     finally:
         conn.close()
-
+def clear_dedup_caches():
+    """Clear in-memory and DB duplicate caches safely."""
+    global global_seen_hashes
+    global_seen_hashes = set()
+    _clear_processed_hashes()
+    
     # Ensure columns exist and are strings for safe .str ops
     for c in ["status","severity","sentiment","category","priority","escalated","likely_to_escalate","bu_code","bu_name","region"]:
         if c not in df.columns:
@@ -833,9 +838,7 @@ if st.sidebar.button("🗑️ Reset Database (Dev Only)"):
     st.sidebar.warning("Database reset & caches cleared. You can re-upload now without false duplicates.")
 
 if st.sidebar.button("🧼 Clear De-dup Caches"):
-    global global_seen_hashes
-    global_seen_hashes = set()
-    _clear_processed_hashes()
+    clear_dedup_caches()
     st.sidebar.success("Cleared in-memory and DB hash caches.")
 
 auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh", value=False)
