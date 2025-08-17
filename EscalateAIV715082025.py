@@ -795,16 +795,28 @@ if not df_res.empty:
     esc_id_sel = st.sidebar.selectbox("🔢 Select Resolved Case", df_res["id"].astype(str).tolist())
     phone = st.sidebar.text_input("📞 Phone Number", "+91", help="Include country code (e.g., +91)")
     msg = st.sidebar.text_area("📨 Message", f"Your issue {esc_id_sel} has been resolved. Thank you!")
+
     c1, c2 = st.sidebar.columns(2)
-    with c1:
-        if st.sidebar.button("Send WhatsApp"):
-            ok = _safe_send_whatsapp(phone, msg)
-            st.sidebar.success(f"✅ WhatsApp sent to {phone}") if ok else st.sidebar.error("❌ WhatsApp API failure")
-    with c2:
-        if st.sidebar.button("Send SMS"):
-            st.sidebar.success(f"✅ SMS sent to {phone}") if send_sms(phone, msg) else None
+
+    # IMPORTANT: use column buttons (not st.sidebar.button inside the columns)
+    send_whatsapp_clicked = c1.button("Send WhatsApp", key="send_whatsapp_btn")
+    send_sms_clicked      = c2.button("Send SMS", key="send_sms_btn")
+
+    if send_whatsapp_clicked:
+        ok = _safe_send_whatsapp(phone, msg)
+        if ok:
+            st.sidebar.success(f"✅ WhatsApp sent to {phone}")
+        else:
+            st.sidebar.error("❌ WhatsApp API failure")
+
+    if send_sms_clicked:
+        if send_sms(phone, msg):
+            st.sidebar.success(f"✅ SMS sent to {phone}")
+        else:
+            st.sidebar.error("❌ SMS failed")
 else:
     st.sidebar.info("No resolved cases for WhatsApp/SMS.")
+
 
 # Sidebar: downloads / misc
 st.sidebar.markdown("### 📤 Downloads")
