@@ -125,96 +125,147 @@ except Exception:
     def schedule_weekly_retraining(): pass
 
 # ======================== Altair Layering Helper =============================
-def _bar_with_labels(df, x_field, y_field, title=None, height=240):
-    """Layered bar chart with labels (avoids Altair padding errors)."""
+# ---------- Analytics helpers (Altair) ----------
+def _bar_with_labels(df, x_field: str, y_field: str, title: str | None = None, height: int = 240,
+                     color_field: str | None = None, color_domain: list[str] | None = None,
+                     color_range: list[str] | None = None):
+    """
+    Returns an Altair chart: bar + text labels. Never passes title=None (Altair requires str).
+    """
     if df is None or df.empty:
         return None
-    base = alt.Chart(df)
-    bars = base.mark_bar().encode(
-        x=alt.X(f"{x_field}:N", sort='-y', title=None),
-        y=alt.Y(f"{y_field}:Q", title=None),
-        color=alt.Color(f"{x_field}:N", legend=None),
-        tooltip=[alt.Tooltip(f"{x_field}:N"), alt.Tooltip(f"{y_field}:Q")]
-    )
-    labels = base.mark_text(dy=-6).encode(
-        x=alt.X(f"{x_field}:N", sort='-y'),
-        y=alt.Y(f"{y_field}:Q"),
-        text=alt.Text(f"{y_field}:Q")
-    )
-    layered = alt.layer(bars, labels).properties(height=height, title=title).configure_view(strokeWidth=0)
-    return layered
-# ============================================================================
 
-# ---------------- Quick analytics view (2×2, uses helper) -------------------
+    # Altair needs proper types
+    df = df.copy()
+    if x_field in df.columns:
+        df[x_field] = df[x_field].fillna("Unknown").astype(str)
+    if y_field in df.columns:
+        df[y_field] = pd.to_numeric(df[y_field], errors="coerce").fillna(0).astype(int)
+
+    base = alt.Chart(df).encode(
+        x=alt.X(f"{x_field}:N", sort="-y", title=None),
+        y=alt.Y(f"{y_field}:Q", title=None)
+    )
+
+    color_enc = alt.Color(f"{color_field}:N",
+                          scale=alt.Scale(domain=color_domain, range=color_range),
+                          legend=None) if color_field else alt.value("#4f46e5")
+
+    bars = base.mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(color=color_enc)
+
+    labels = base.mark_text(dy=-6).encode(
+        text=alt.Text(f"{y_field}:Q", format="d"),
+        color=alt.value("#111827")
+    )
+
+    chart = alt.layer(bars, labels).properties(height=height)
+    if title is not None:
+        chart = chart.properties(title=str(title))  # ensure string
+
+    return chart.configure_view(strokeWidth=0)
+
+
 def show_analytics_view():
+    """
+    Compact analytics with safe defaults (no None titles in Altair).
+    """
     df = fetch_escalations()
-    st.title("📊 Advanced Analytics")
+    st.title("📊 Escalation Analytics")
+
     if df.empty:
         st.warning("⚠️ No escalation data available.")
         return
 
-    df['timestamp'] = pd.to_datetime(df.get('timestamp'), errors='coerce')
-    df['status']    = df.get('status', pd.Series([], dtype=str)).astype(str).str.strip().str.title()
-    df['severity']  = df.get('severity', pd.Series([], dtype=str)).astype(str).str.lower()
-    df['sentiment'] = df.get('sentiment', pd.Series([], dtype=str)).astype(str).str.lower()
+    # Clean columns used in charts
+    df = df.copy()
+    for c in ["severity", "sentiment", "category", "region", "bu_code", "timestamp"]:
+        if c not in df.columns:
+            df[c] = None
 
-    c1, c2 = st.columns(2)
+    df["severity"]  = df["severity"].fillna("Unknown").astype(str).str.lower()
+    df["sentiment"] = df["sentiment"].fillna("Unknown").astype(str).str.lower()
+    df["category"]  = df["category"].fillna("Unknown").astype(str)
+    df["region"]    = df["region"].fillna("Others").astype(str)
+    df["bu_code"]   = df["bu_code"].fillna("OTHER").astype(str)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
 
-    # (1) Volume over time
-    with c1:
-        st.caption("Volume Over Time")
-        vol = (df.dropna(subset=['timestamp'])
-                 .assign(date=df['timestamp'].dt.date)
-                 .groupby('date').size().reset_index(name='count')
-                 .sort_values('date'))
-        if not vol.empty:
-            ch = alt.Chart(vol).mark_line(point=True).encode(
-                x=alt.X('date:T', title=None, axis=alt.Axis(labelOverlap=True, ticks=False)),
-                y=alt.Y('count:Q', title=None),
-                tooltip=['date:T','count:Q']
-            ).properties(height=240)
-            st.altair_chart(ch, use_container_width=True)
-        else:
-            st.info("No dated records.")
+    # 1) Volume over time (day)
+    st.subheader("📈 Escalation Volume Over Time")
+    vol = (df.assign(day=df["timestamp"].dt.date)
+             .groupby("day", dropna=False).size()
+             .reset_index(name="count"))
+    if not vol.empty:
+        st.line_chart(vol.set_index("day")["count"])
+    else:
+        st.info("No timestamped data to plot.")
 
-    # (2) Severity distribution
-    with c2:
-        st.caption("Severity Distribution")
-        sev = df['severity'].value_counts().reset_index()
-        sev.columns = ['severity','count']
-        if not sev.empty:
-            chart = _bar_with_labels(sev, x_field="severity", y_field="count", title=None, height=240)
+    # 2) Severity distribution
+    st.subheader("🔥 Severity Distribution")
+    sev_order  = ["minor", "major", "critical", "unknown"]
+    sev_colors = ["#10b981", "#f59e0b", "#ef4444", "#9ca3af"]
+    sev = (df.groupby("severity", dropna=False).size().reset_index(name="count"))
+    sev["severity"] = sev["severity"].fillna("unknown")
+    chart = _bar_with_labels(
+        sev, x_field="severity", y_field="count",
+        title="Severity (count)",
+        height=240,
+        color_field="severity",
+        color_domain=sev_order,
+        color_range=sev_colors
+    )
+    if chart is not None:
+        st.altair_chart(chart, use_container_width=True)
+
+    # 3) Sentiment distribution
+    st.subheader("🧠 Sentiment Breakdown")
+    sent_order  = ["negative", "neutral", "positive", "unknown"]
+    sent_colors = ["#ef4444", "#f59e0b", "#22c55e", "#9ca3af"]
+    sen = (df.groupby("sentiment", dropna=False).size().reset_index(name="count"))
+    sen["sentiment"] = sen["sentiment"].fillna("unknown")
+    chart = _bar_with_labels(
+        sen, x_field="sentiment", y_field="count",
+        title="Sentiment (count)",
+        height=240,
+        color_field="sentiment",
+        color_domain=sent_order,
+        color_range=sent_colors
+    )
+    if chart is not None:
+        st.altair_chart(chart, use_container_width=True)
+
+    # 4) Region distribution (if available)
+    if "region" in df.columns:
+        st.subheader("🗺️ Region Mix")
+        reg_order  = ["North", "East", "South", "West", "NC", "Others"]
+        reg_colors = ["#2563eb", "#d97706", "#059669", "#9333ea", "#dc2626", "#64748b"]
+        reg = df.groupby("region", dropna=False).size().reset_index(name="count")
+        chart = _bar_with_labels(
+            reg, x_field="region", y_field="count",
+            title="Region (count)",
+            height=240,
+            color_field="region",
+            color_domain=reg_order,
+            color_range=reg_colors
+        )
+        if chart is not None:
             st.altair_chart(chart, use_container_width=True)
-        else:
-            st.info("No severity data.")
 
-    c3, c4 = st.columns(2)
-
-    # (3) Sentiment distribution
-    with c3:
-        st.caption("Sentiment Breakdown")
-        sent = df['sentiment'].value_counts().reset_index()
-        sent.columns = ['sentiment','count']
-        if not sent.empty:
-            chart = _bar_with_labels(sent, x_field="sentiment", y_field="count", title=None, height=240)
+    # 5) BU distribution (SPIBS / PPIBS / PSIBS / IDIBS / others)
+    if "bu_code" in df.columns:
+        st.subheader("🏷️ BU Distribution")
+        bu_order  = ["SPIBS", "PPIBS", "PSIBS", "IDIBS", "BMS", "H&D", "A2E", "Solar", "OTHER"]
+        bu_colors = ["#2563eb", "#16a34a", "#f59e0b", "#9333ea", "#06b6d4", "#f97316", "#a855f7", "#22c55e", "#94a3b8"]
+        bu = df.groupby("bu_code", dropna=False).size().reset_index(name="count")
+        chart = _bar_with_labels(
+            bu, x_field="bu_code", y_field="count",
+            title="BU (count)",
+            height=240,
+            color_field="bu_code",
+            color_domain=bu_order,
+            color_range=bu_colors
+        )
+        if chart is not None:
             st.altair_chart(chart, use_container_width=True)
-        else:
-            st.info("No sentiment data.")
-
-    # (4) Ageing buckets (hours)
-    with c4:
-        st.caption("Ageing (Hours)")
-        if df['timestamp'].notna().any():
-            hrs = ((pd.Timestamp.now() - df['timestamp']).dt.total_seconds() / 3600).clip(lower=0)
-            bins = [-1, 4, 12, 24, 48, 120, 1e9]
-            labels = ["≤4h","5–12h","13–24h","25–48h","49–120h",">120h"]
-            bucket = pd.cut(hrs, bins=bins, labels=labels)
-            ag = bucket.value_counts().reindex(labels, fill_value=0).reset_index()
-            ag.columns = ['bucket','count']
-            chart = _bar_with_labels(ag, x_field="bucket", y_field="count", title=None, height=240)
-            st.altair_chart(chart, use_container_width=True)
-        else:
-            st.info("No timestamps to compute ageing.")
 
 # ---------------- Configuration ----------------
 load_dotenv()
