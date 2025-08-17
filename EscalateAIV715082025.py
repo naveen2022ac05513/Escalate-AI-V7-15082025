@@ -25,12 +25,11 @@ import altair as alt
 alt.data_transformers.disable_max_rows()
 
 
-def add_altair_border(ch, height=None):
+def _alt_borderize(ch, height=None):
     try:
         import altair as alt
         alt.data_transformers.disable_max_rows()
-
-        if height is not None:
+if height is not None:
             ch = ch.properties(height=height)
         return (ch.configure_view(stroke='#CBD5E1', strokeWidth=1)
                   .configure_axis(grid=True, domain=True))
@@ -503,7 +502,6 @@ def email_polling_job():
         time.sleep(60)
 
 # ---------------- Streamlit UI ----------------
-st.set_page_config(page_title="Escalation Management", layout="wide")
 ensure_schema()
 
 try: validate_escalation_schema()
