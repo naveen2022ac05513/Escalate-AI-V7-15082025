@@ -1117,12 +1117,12 @@ elif page == "⚙️ Admin Tools":
             except Exception as e:
                 st.error(f"Reset error: {e}")
             try:
-            ensure_audit_log_table()
-            log_escalation_action("init","N/A","system","Initializing audit log table")
-            conn = sqlite3.connect(DB_PATH)
-            df = pd.read_sql("SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT 100", conn)
-            conn.close()
-            st.dataframe(df)
+                ensure_audit_log_table()
+                log_escalation_action("init","N/A","system","Initializing audit log table")
+                conn = sqlite3.connect(DB_PATH)
+                df = pd.read_sql("SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT 100", conn)
+                conn.close()
+                st.dataframe(df)
         except Exception as e:
             st.warning("⚠️ Audit log not available."); st.exception(e)
 
