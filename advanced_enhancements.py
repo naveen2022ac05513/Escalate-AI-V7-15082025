@@ -129,6 +129,24 @@ def validate_escalation_schema():
     conn.commit()
     conn.close()
 
+
+def ensure_audit_log_table():
+    """
+    Ensure the audit_log table exists in the DB.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS audit_log (
+        timestamp TEXT,
+        action_type TEXT,
+        case_id TEXT,
+        user TEXT,
+        details TEXT
+    )
+    """)
+    conn.commit()
+    conn.close()
 # 🧾 Audit Logger
 def log_escalation_action(action_type, case_id, user, details):
     conn = sqlite3.connect(DB_PATH)
