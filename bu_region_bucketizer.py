@@ -59,7 +59,7 @@ _BU_RULES = [
      r"netshelter|netbotz|"
      r"rack\s*(?:pdu|ats)|rpdus?|pdu[s]?|"
      r"uniflair|inrow|row\s*cooling|compressor|condensor|pump|lib|chiller|"
-     r"(?:precision\s*)?cooling|crac|crah|"
+     r"(?:precision\s*)?cooling|crac|crah|ups|outdoor|indoor|pipe|LMU|danfoss|uniflair|pcb|pcba|board|galaxy|ups|phe|ahu|leak|"
      r"battery(?:\s*bank)?|"
      r"micro\s*data\s*center|"
      r"ecostruxure\s*it(?:\s*(?:expert|advisor|gateway))?|dcim"
@@ -88,7 +88,7 @@ _BU_RULES = [
      r"ecostruxure\s*(?:machine|plant|process)\b|"
      r"(?:control\s*expert|unity\s*pro|somachine|vijeo\s*designer)|"
      r"scadapack|remoteconnect|telemetry\b|"
-     r"telemecanique|osisense|zelio\s*logic"
+     r"telemecanique|osisense|zelio\s*logic|ats"
      r")\b"),
 
     # Medium Voltage / Grid Automation
@@ -99,7 +99,7 @@ _BU_RULES = [
      r"gis\b|ais\b|sf6\b|"
      r"(?:easergy(?:\s*p[35])?|micom|vamp)\b|t300\b|hwx|pix|hvx|trihal|oil|transformer|easergy|vaccum|relay|sensor"
      r"ring\s*main\s*unit|rmu[s]?|"
-     r"recloser|sectionalizer|"
+     r"recloser|sectionalizer|vcb|vcu|breaker|eto|ecofit|"
      r"(?:vcb|vacuum\s*circuit\s*breaker)\b|"
      r"(?:adms|derms)\b|"
      r"substation\s*automation|grid\s*(?:monitoring|control|automation)"
@@ -115,7 +115,7 @@ _BU_RULES = [
      r"tesys|zelio(?!\s*logic)|powerlogic|ion\s*\d+|accusine|pm\d{3,4}|"
      r"panelboard|switchboard|"
      r"capacitor\s*bank|apfc|power\s*factor|"
-     r"changeover|ats\b|isolator|switch\s*disconnector|"
+     r"changeover|ats\b|isolator|switch\s*disconnector|pcc|mcc|nsx"
      r"easypact(?:\s*ezc)?"
      r")\b"),
 
