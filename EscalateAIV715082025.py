@@ -497,7 +497,7 @@ st.markdown("""
   .kv{font-size:12px;margin:2px 0;white-space:nowrap;}
   .aisum{background:#0b1220;color:#e5f2ff;padding:10px 12px;border-radius:10px;box-shadow:0 6px 14px rgba(0,0,0,.10);font-size:13px;}
   .sla-pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#ef4444;color:#fff;font-weight:600;font-size:12px;}
-  .totals-pill{display:flex;gap:10px;align-items:center;background:#111827;color:#e5e7eb;padding:8px 12px;border-radius:999px;
+  .totals-pill{display:flex;gap:10px;align-items:center;background:#111827;color:#e5e7eb;height:40px;padding:0 12px;border-radius:999px;
                box-shadow:0 6px 14px rgba(0,0,0,.10); font-size:13px; white-space:nowrap;}
   .totals-pill b{color:#fff;}
   .kpi-panel{ margin-top:0 !important; background:transparent !important; border:0 !important; box-shadow:none !important; padding:0 !important; }
@@ -831,7 +831,8 @@ if page == "📊 Main Dashboard":
                             ts = pd.to_datetime(row.get("timestamp"))
                             dlt = datetime.datetime.now() - ts
                             days = dlt.days; hours, rem = divmod(dlt.seconds, 3600); minutes, _ = divmod(rem, 60)
-                            age_str = f"{days}d {hours}h {minutes}m"
+                            total_hours = int(dlt.total_seconds() // 3600)
+                            age_str = f"{total_hours} hrs"
                             age_col = "#22c55e" if dlt.total_seconds()/3600 < 12 else "#f59e0b" if dlt.total_seconds()/3600 < 24 else "#ef4444"
                         except Exception:
                             age_str, age_col = "N/A", "#6b7280"
@@ -890,9 +891,9 @@ if page == "📊 Main Dashboard":
                                     update_escalation_status(case_id, new_status, action_taken, owner, owner_email)
                                     st.success("✅ Saved")
                             with rc2:
-                                n1_email = st.text_input("N+1 Email ID", key=f"{prefix}_n1")
+                                n1_email = st.text_input("", key=f"{prefix}_n1", placeholder="N+1 Email ID", label_visibility="collapsed")
                             with rc3:
-                                if st.button("🚀 Escalate to N+1", key=f"{prefix}_n1btn"):
+                                if st.button("🚀 N+1", key=f"{prefix}_n1btn"):
                                     update_escalation_status(
                                         case_id, new_status,
                                         action_taken or row.get("action_taken",""),
@@ -988,6 +989,7 @@ elif page == "📈 Advanced Analytics":
     try: show_analytics_view()
     except Exception as e: st.error("❌ Failed to load analytics view."); st.exception(e)
 
+
 elif page == "📈 BU & Region Trends":
     st.subheader("📈 BU & Region Trends")
     df = fetch_escalations()
@@ -1000,36 +1002,43 @@ elif page == "📈 BU & Region Trends":
                                    city_col="City" if "City" in df.columns else "city")
         bu_counts = df["bu_code"].astype(str).str.upper().replace({"SP":"SPIBS","PP":"PPIBS","PS":"PSIBS","IA":"IDIBS"}).value_counts().reset_index()
         bu_counts.columns = ["BU","Count"]
-        ch_bu = alt.Chart(bu_counts).mark_bar().encode(
-            x=alt.X("BU:N", sort="-y"), y=alt.Y("Count:Q"), color="BU:N", tooltip=["BU","Count"]
-        ).properties(title="BU Distribution", height=280)
-        st.altair_chart(ch_bu + ch_bu.mark_text(dy=-5).encode(text="Count:Q"), use_container_width=True)
-
         reg_counts = df["region"].astype(str).str.title().value_counts().reset_index()
         reg_counts.columns = ["Region","Count"]
-        ch_reg = alt.Chart(reg_counts).mark_bar().encode(
-            x=alt.X("Region:N", sort="-y"), y=alt.Y("Count:Q"), color="Region:N", tooltip=["Region","Count"]
-        ).properties(title="Region Distribution", height=280)
-        st.altair_chart(ch_reg + ch_reg.mark_text(dy=-5).encode(text="Count:Q"), use_container_width=True)
 
-        if "timestamp" in df.columns:
-            df["date"] = pd.to_datetime(df["timestamp"], errors='coerce').dt.date
-            t_bu = df.groupby(["date", df["bu_code"].astype(str).str.upper()]).size().reset_index(name="Count")
-            t_bu["bu_code"] = t_bu["bu_code"].replace({"SP":"SPIBS","PP":"PPIBS","PS":"PSIBS","IA":"IDIBS"})
-            ch_t_bu = alt.Chart(t_bu).mark_line(point=True).encode(
-                x=alt.X("date:T", title="Date"), y=alt.Y("Count:Q"),
-                color=alt.Color("bu_code:N", title="BU"),
-                tooltip=["date:T","bu_code:N","Count:Q"]
-            ).properties(title="Daily Trend by BU", height=320)
-            st.altair_chart(ch_t_bu, use_container_width=True)
+        try:
+            ch_bu = alt.Chart(bu_counts).mark_bar().encode(
+                x=alt.X("BU:N", sort="-y"), y=alt.Y("Count:Q"), color="BU:N", tooltip=["BU","Count"]
+            ).properties(title="BU Distribution", height=220)
+            ch_reg = alt.Chart(reg_counts).mark_bar().encode(
+                x=alt.X("Region:N", sort="-y"), y=alt.Y("Count:Q"), color="Region:N", tooltip=["Region","Count"]
+            ).properties(title="Region Distribution", height=220)
 
-            t_rg = df.groupby(["date", df["region"].astype(str).str.title()]).size().reset_index(name="Count")
-            ch_t_rg = alt.Chart(t_rg).mark_line(point=True).encode(
-                x=alt.X("date:T", title="Date"), y=alt.Y("Count:Q"),
-                color=alt.Color("region:N", title="Region"),
-                tooltip=["date:T","region:N","Count:Q"]
-            ).properties(title="Daily Trend by Region", height=320)
-            st.altair_chart(ch_t_rg, use_container_width=True)
+            top1, top2 = st.columns(2)
+            with top1: st.altair_chart(ch_bu + ch_bu.mark_text(dy=-5).encode(text="Count:Q"), use_container_width=True)
+            with top2: st.altair_chart(ch_reg + ch_reg.mark_text(dy=-5).encode(text="Count:Q"), use_container_width=True)
+
+            if "timestamp" in df.columns:
+                df["date"] = pd.to_datetime(df["timestamp"], errors='coerce').dt.date
+                t_bu = df.groupby(["date", df["bu_code"].astype(str).str.upper()]).size().reset_index(name="Count")
+                t_bu["bu_code"] = t_bu["bu_code"].replace({"SP":"SPIBS","PP":"PPIBS","PS":"PSIBS","IA":"IDIBS"})
+                ch_t_bu = alt.Chart(t_bu).mark_line(point=True).encode(
+                    x=alt.X("date:T", title="Date"), y=alt.Y("Count:Q"),
+                    color=alt.Color("bu_code:N", title="BU"),
+                    tooltip=["date:T","bu_code:N","Count:Q"]
+                ).properties(title="Daily Trend by BU", height=240)
+
+                t_rg = df.groupby(["date", df["region"].astype(str).str.title()]).size().reset_index(name="Count")
+                ch_t_rg = alt.Chart(t_rg).mark_line(point=True).encode(
+                    x=alt.X("date:T", title="Date"), y=alt.Y("Count:Q"),
+                    color=alt.Color("region:N", title="Region"),
+                    tooltip=["date:T","region:N","Count:Q"]
+                ).properties(title="Daily Trend by Region", height=240)
+
+                bot1, bot2 = st.columns(2)
+                with bot1: st.altair_chart(ch_t_bu, use_container_width=True)
+                with bot2: st.altair_chart(ch_t_rg, use_container_width=True)
+        except Exception as e:
+            st.warning(f"Charts unavailable: {type(e).__name__}: {e}")
 
 elif page == "🔥 SLA Heatmap":
     st.subheader("🔥 SLA Heatmap")
