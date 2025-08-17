@@ -3,12 +3,13 @@
 # EscalateAI — Customer Escalation Prediction & Management Tool
 # --------------------------------------------------------------------
 # - SLA capsule + AI summary
-# - Totals pill + compact search
-# - Sidebar: MS Teams/Email, WhatsApp/SMS (Resolved only), Filters incl. BU/Region
+# - Totals pill (compact, auto-width) + compact search
+# - Sidebar: MS Teams/Email, WhatsApp/SMS (Resolved only), Filters incl. BU/Region (multi-select)
 # - Duplicate detection; Reset clears DB & in-memory set
 # - BU/Region enrichment
 # - Trends for BU & Region
 # - Robust admin wiring & enhancement dashboard import
+# - Expander polished (glass), Age chip (hours only), N+1 inline with Save, 2×2 Advanced Analytics
 # --------------------------------------------------------------------
 
 import os, re, time, datetime, threading, hashlib, sqlite3, smtplib, requests, imaplib, email, traceback
@@ -129,23 +130,91 @@ except Exception:
     def summarize_escalations(): return "No summary available."
     def schedule_weekly_retraining(): pass
 
-# ---------------- Quick analytics view ----------------
+# ---------------- Quick analytics view (NEW 2×2) ----------------
 def show_analytics_view():
     df = fetch_escalations()
-    st.title("📊 Escalation Analytics")
+    st.title("📊 Advanced Analytics")
     if df.empty:
-        st.warning("⚠️ No escalation data available."); return
-    st.subheader("📈 Escalation Volume Over Time")
-    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-    st.line_chart(df.groupby(df['timestamp'].dt.date).size())
-    st.subheader("🔥 Severity Distribution")
-    st.bar_chart(df['severity'].value_counts())
-    st.subheader("🧠 Sentiment Breakdown")
-    st.bar_chart(df['sentiment'].value_counts())
-    st.subheader("⏳ Ageing Buckets")
-    df['age_days'] = (pd.Timestamp.now() - df['timestamp']).dt.days
-    df['age_bucket'] = pd.cut(df['age_days'], bins=[0,3,7,14,30,90], labels=["0–3d","4–7d","8–14d","15–30d","31–90d"])
-    st.bar_chart(df['age_bucket'].value_counts().sort_index())
+        st.warning("⚠️ No escalation data available.")
+        return
+
+    df['timestamp'] = pd.to_datetime(df.get('timestamp'), errors='coerce')
+    df['status']    = df.get('status', pd.Series([], dtype=str)).astype(str).str.strip().str.title()
+    df['severity']  = df.get('severity', pd.Series([], dtype=str)).astype(str).str.lower()
+    df['sentiment'] = df.get('sentiment', pd.Series([], dtype=str)).astype(str).str.lower()
+
+    c1, c2 = st.columns(2)
+
+    # (1) Volume over time
+    with c1:
+        st.caption("Volume Over Time")
+        vol = (df.dropna(subset=['timestamp'])
+                 .assign(date=df['timestamp'].dt.date)
+                 .groupby('date').size().reset_index(name='count')
+                 .sort_values('date'))
+        if not vol.empty:
+            ch = alt.Chart(vol).mark_line(point=True).encode(
+                x=alt.X('date:T', title=None, axis=alt.Axis(labelOverlap=True, ticks=False)),
+                y=alt.Y('count:Q', title=None),
+                tooltip=['date:T','count:Q']
+            ).properties(height=240, padding={"left":10,"right":10,"top":10,"bottom":10})
+            st.altair_chart(ch, use_container_width=True)
+        else:
+            st.info("No dated records.")
+
+    # (2) Severity distribution
+    with c2:
+        st.caption("Severity Distribution")
+        sev = df['severity'].value_counts().reset_index()
+        sev.columns = ['severity','count']
+        if not sev.empty:
+            ch = alt.Chart(sev).mark_bar().encode(
+                x=alt.X('severity:N', sort='-y', title=None),
+                y=alt.Y('count:Q', title=None),
+                tooltip=['severity:N','count:Q'],
+                color='severity:N'
+            ).properties(height=240, padding={"left":10,"right":10,"top":10,"bottom":10})
+            st.altair_chart(ch + ch.mark_text(dy=-6).encode(text='count:Q'), use_container_width=True)
+        else:
+            st.info("No severity data.")
+
+    c3, c4 = st.columns(2)
+
+    # (3) Sentiment distribution
+    with c3:
+        st.caption("Sentiment Breakdown")
+        sent = df['sentiment'].value_counts().reset_index()
+        sent.columns = ['sentiment','count']
+        if not sent.empty:
+            ch = alt.Chart(sent).mark_bar().encode(
+                x=alt.X('sentiment:N', sort='-y', title=None),
+                y=alt.Y('count:Q', title=None),
+                tooltip=['sentiment:N','count:Q'],
+                color='sentiment:N'
+            ).properties(height=240, padding={"left":10,"right":10,"top":10,"bottom":10})
+            st.altair_chart(ch + ch.mark_text(dy=-6).encode(text='count:Q'), use_container_width=True)
+        else:
+            st.info("No sentiment data.")
+
+    # (4) Ageing buckets (hours)
+    with c4:
+        st.caption("Ageing (Hours)")
+        if df['timestamp'].notna().any():
+            hrs = ((pd.Timestamp.now() - df['timestamp']).dt.total_seconds() / 3600).clip(lower=0)
+            bins = [-1, 4, 12, 24, 48, 120, 1e9]
+            labels = ["≤4h","5–12h","13–24h","25–48h","49–120h",">120h"]
+            bucket = pd.cut(hrs, bins=bins, labels=labels)
+            ag = bucket.value_counts().reindex(labels, fill_value=0).reset_index()
+            ag.columns = ['bucket','count']
+            ch = alt.Chart(ag).mark_bar().encode(
+                x=alt.X('bucket:N', title=None),
+                y=alt.Y('count:Q', title=None),
+                tooltip=['bucket:N','count:Q'],
+                color='bucket:N'
+            ).properties(height=240, padding={"left":10,"right":10,"top":10,"bottom":10})
+            st.altair_chart(ch + ch.mark_text(dy=-6).encode(text='count:Q'), use_container_width=True)
+        else:
+            st.info("No timestamps to compute ageing.")
 
 # ---------------- Configuration ----------------
 load_dotenv()
@@ -477,36 +546,63 @@ ensure_schema()
 try: validate_escalation_schema()
 except Exception: pass
 
-# Styles
+# Styles (expanded; glass expander, compact totals, N+1 alignment)
 st.markdown("""
 <style>
   .sticky-header{position:sticky;top:0;z-index:999;background:linear-gradient(135deg,#0ea5e9 0%,#7c3aed 100%);
     padding:12px 16px;border-radius:0 0 12px 12px;box-shadow:0 8px 20px rgba(0,0,0,.12);}
   .sticky-header h1{color:#fff;margin:0;text-align:center;font-size:30px;line-height:1.2;}
+
   .kanban-title{display:flex;justify-content:center;align-items:center;gap:8px;border-radius:10px;
     padding:8px 10px;color:#fff;text-align:center;box-shadow:0 6px 14px rgba(0,0,0,.07);margin:4px 0;font-size:14px;}
+
+  /* GLASS EXPANDER — looks awesome */
   details[data-testid="stExpander"]{
-    background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;margin:2px 0 !important;
-    box-shadow:0 4px 10px rgba(0,0,0,.05);
+    background: linear-gradient(180deg, rgba(255,255,255,.80), rgba(255,255,255,.66));
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,.45);
+    border-radius: 14px;
+    margin: 6px 0 !important;
+    box-shadow: 0 10px 24px rgba(2,6,23,.10), inset 0 1px 0 rgba(255,255,255,.6);
+    transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
   }
-  details[data-testid="stExpander"] > summary{padding:8px 10px;font-weight:700;}
-  details[data-testid="stExpander"] > div[role="region"]{padding:8px 10px 10px 10px;}
-  div[data-testid="stVerticalBlock"] div[data-testid="stVerticalBlock"]{gap:.25rem !important;}
-  .age{padding:4px 8px;border-radius:8px;color:#fff;font-weight:600;text-align:center;font-size:12px;}
-  .summary{font-size:15px;color:#0f172a;margin-bottom:6px;}
+  details[data-testid="stExpander"]:hover{
+    transform: translateY(-1px);
+    box-shadow: 0 16px 36px rgba(2,6,23,.14);
+    border-color: rgba(255,255,255,.65);
+  }
+  details[data-testid="stExpander"] > summary{
+    padding:10px 12px !important;
+    font-weight:800 !important;
+    color:#0f172a !important;
+    letter-spacing:.2px;
+  }
+  details[data-testid="stExpander"] > div[role="region"]{
+    padding:10px 12px 12px 12px !important;
+    border-top: 1px dashed rgba(2,6,23,.08);
+  }
+
+  .age{padding:4px 8px;border-radius:8px;color:#fff;font-weight:700;text-align:center;font-size:12px;}
+  .summary{font-size:15px;color:#0b1220;margin-bottom:6px;line-height:1.35;}
   .kv{font-size:12px;margin:2px 0;white-space:nowrap;}
-  .aisum{background:#0b1220;color:#e5f2ff;padding:10px 12px;border-radius:10px;box-shadow:0 6px 14px rgba(0,0,0,.10);font-size:13px;}
-  .sla-pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#ef4444;color:#fff;font-weight:600;font-size:12px;}
-  .totals-pill{display:flex;gap:10px;align-items:center;background:#111827;color:#e5e7eb;padding:8px 12px;border-radius:999px;
-               box-shadow:0 6px 14px rgba(0,0,0,.10); font-size:13px; white-space:nowrap;}
+  .aisum{background:#0b1220;color:#e5f2ff;padding:10px 12px;border-radius:10px;
+         box-shadow:0 6px 14px rgba(0,0,0,.10);font-size:13px;}
+  .sla-pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#ef4444;color:#fff;font-weight:700;font-size:12px;}
+
+  /* Totals pill — compact auto-width */
+  .totals-pill{display:inline-flex;gap:10px;align-items:center;background:#111827;color:#e5e7eb;
+               padding:8px 12px;border-radius:999px;box-shadow:0 6px 14px rgba(0,0,0,.10);font-size:13px;white-space:nowrap;}
   .totals-pill b{color:#fff;}
+
   .kpi-panel{ margin-top:0 !important; background:transparent !important; border:0 !important; box-shadow:none !important; padding:0 !important; }
-  .kpi-gap{ height:22px !important; }
-  .tag-pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:600;
+  .kpi-gap{ height:18px !important; }
+
+  .tag-pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:700;
             border:1px solid var(--c,#cbd5e1);color:var(--c,#334155);background:#fff;white-space:nowrap;}
-  .controls-panel{ background:#fff; border:0; border-radius:12px; padding:10px 0 2px 0; margin:6px 0 2px 0; }
+
+  .controls-panel{ background:transparent; border:0; border-radius:12px; padding:10px 0 2px 0; margin:6px 0 2px 0; }
   div[data-testid="stTextInput"]  label, div[data-testid="stTextArea"] label, div[data-testid="stSelectbox"] label {
-    font-size:13px !important; font-weight:600 !important; color:#475569 !important; margin-bottom:4px !important;
+    font-size:13px !important; font-weight:700 !important; color:#334155 !important; margin-bottom:4px !important;
   }
   div[data-testid="stTextInput"] input, div[data-testid="stTextArea"] textarea {
     background:#f3f4f6 !important; border:1px solid #e5e7eb !important; border-radius:8px !important; height:40px !important; padding:8px 10px !important;
@@ -514,8 +610,11 @@ st.markdown("""
   div[data-testid="stSelectbox"] div[role="combobox"]{
     background:#f3f4f6 !important; border:1px solid #e5e7eb !important; border-radius:8px !important; min-height:40px !important; padding:6px 10px !important; align-items:center !important;
   }
-  .controls-panel .stButton>button{ height:40px !important; border-radius:10px !important; padding:0 14px !important; }
+
+  /* Buttons alignment & small spacer */
+  .controls-panel .stButton>button{ height:40px !important; border-radius:10px !important; padding:0 14px !important; margin-top:4px !important; }
   .small-search input{height:38px !important; font-size:13px !important;}
+  .spacer-h{height:8px;}
 </style>
 <div class="sticky-header"><h1>🚨 EscalateAI – AI Based Customer Escalation Prediction & Management Tool</h1></div>
 """, unsafe_allow_html=True)
@@ -817,33 +916,36 @@ if page == "📊 Main Dashboard":
                         cr = (row.get("criticality") or "medium").lower()
                         likely = predict_escalation(model_for_view, s,u,sv,cr)
 
-                        sev_color = SEVERITY_COLORS.get(sv, "#6b7280")
-                        urg_color = URGENCY_COLORS.get(u, "#6b7280")
-                        sent_color= {"negative":"#ef4444","positive":"#22c55e","neutral":"#f59e0b"}.get(s, "#6b7280")
-                        esc_color = "#dc2626" if likely=="Yes" else "#6b7280"
+                        sev_color  = SEVERITY_COLORS.get(sv, "#6b7280")
+                        urg_color  = URGENCY_COLORS.get(u, "#6b7280")
+                        sent_color = {"negative":"#ef4444","positive":"#22c55e","neutral":"#f59e0b"}.get(s, "#6b7280")
+                        esc_color  = "#dc2626" if likely=="Yes" else "#6b7280"
 
                         case_id  = row.get('id','N/A')
                         customer = row.get('customer','Unknown')
                         summary  = summarize_issue_text(row.get('issue',''))
                         flag = "🚩" if likely=="Yes" else ""
 
+                        # Age chip (HOURS ONLY)
                         try:
                             ts = pd.to_datetime(row.get("timestamp"))
-                            dlt = datetime.datetime.now() - ts
-                            days = dlt.days; hours, rem = divmod(dlt.seconds, 3600); minutes, _ = divmod(rem, 60)
-                            age_str = f"{days}d {hours}h {minutes}m"
-                            age_col = "#22c55e" if dlt.total_seconds()/3600 < 12 else "#f59e0b" if dlt.total_seconds()/3600 < 24 else "#ef4444"
+                            dlt_hours = max(0, int((datetime.datetime.now() - ts).total_seconds() // 3600))
+                            age_str = f"{dlt_hours}h"
+                            age_col = "#22c55e" if dlt_hours < 12 else "#f59e0b" if dlt_hours < 24 else "#ef4444"
                         except Exception:
                             age_str, age_col = "N/A", "#6b7280"
 
                         with st.expander(f"🆔 {case_id} — {customer} {flag}", expanded=False):
+                            # Summary + Age
                             r0a, r0b = st.columns([0.75, 0.25])
                             with r0a:
                                 st.markdown(f"<div class='summary'>{summary}</div>", unsafe_allow_html=True)
                             with r0b:
                                 st.markdown(f"<div style='text-align:right;'><span class='age' style='background:{age_col};'>Age: {age_str}</span></div>", unsafe_allow_html=True)
 
+                            # --- KPI PANEL (two rows) ---
                             st.markdown("<div class='kpi-panel'>", unsafe_allow_html=True)
+
                             ka1, ka2, ka3 = st.columns(3)
                             with ka1:
                                 st.markdown(f"<div class='kv'>📛 <b>Severity</b> <span class='tag-pill' style='--c:{sev_color}; border-color:{sev_color}; color:{sev_color};'>{sv.capitalize()}</span></div>", unsafe_allow_html=True)
@@ -853,6 +955,7 @@ if page == "📊 Main Dashboard":
                                 st.markdown(f"<div class='kv'>🎯 <b>Criticality</b> <span class='tag-pill' style='--c:#8b5cf6; border-color:#8b5cf6; color:#8b5cf6;'>{cr.capitalize()}</span></div>", unsafe_allow_html=True)
 
                             st.markdown("<div class='kpi-gap'></div>", unsafe_allow_html=True)
+
                             kb1, kb2, kb3 = st.columns(3)
                             with kb1:
                                 st.markdown(f"<div class='kv'>📂 <b>Category</b> <span class='tag-pill'>{(row.get('category') or 'other').capitalize()}</span></div>", unsafe_allow_html=True)
@@ -860,11 +963,14 @@ if page == "📊 Main Dashboard":
                                 st.markdown(f"<div class='kv'>💬 <b>Sentiment</b> <span class='tag-pill' style='--c:{sent_color}; border-color:{sent_color}; color:{sent_color};'>{s.capitalize()}</span></div>", unsafe_allow_html=True)
                             with kb3:
                                 st.markdown(f"<div class='kv'>📈 <b>Likely</b> <span class='tag-pill' style='--c:{esc_color}; border-color:{esc_color}; color:{esc_color};'>{likely}</span></div>", unsafe_allow_html=True)
-                            st.markdown("</div>", unsafe_allow_html=True)
 
+                            st.markdown("</div>", unsafe_allow_html=True)  # /kpi-panel
+
+                            # ---------- CONTROLS ----------
                             st.markdown("<div class='controls-panel'>", unsafe_allow_html=True)
                             prefix = f"case_{case_id}"
 
+                            # Row A: Status (select) | Action Taken
                             ra1, ra2 = st.columns([1.0, 2.2])
                             with ra1:
                                 current_status = (row.get("status") or "Open").strip().title()
@@ -878,21 +984,25 @@ if page == "📊 Main Dashboard":
                             with ra2:
                                 action_taken = st.text_input("Action Taken", row.get("action_taken",""), key=f"{prefix}_action")
 
+                            # Row B: Owner | Owner Email
                             rb1, rb2 = st.columns(2)
                             with rb1:
                                 owner = st.text_input("Owner", row.get("owner",""), key=f"{prefix}_owner")
                             with rb2:
                                 owner_email = st.text_input("Owner Email", row.get("owner_email",""), key=f"{prefix}_email")
 
-                            rc1, rc2, rc3 = st.columns([0.9, 1.6, 1.0])
-                            with rc1:
+                            # Row C: N+1 Email | spacer | Save | N+1
+                            rc_email, rc_sp, rc_save, rc_escalate = st.columns([2.0, 0.15, 0.9, 0.9])
+                            with rc_email:
+                                n1_email = st.text_input("N+1 Email", key=f"{prefix}_n1", placeholder="name@example.com")
+                            with rc_sp:
+                                st.markdown("<div class='spacer-h'></div>", unsafe_allow_html=True)
+                            with rc_save:
                                 if st.button("💾 Save", key=f"{prefix}_save"):
                                     update_escalation_status(case_id, new_status, action_taken, owner, owner_email)
                                     st.success("✅ Saved")
-                            with rc2:
-                                n1_email = st.text_input("N+1 Email ID", key=f"{prefix}_n1")
-                            with rc3:
-                                if st.button("🚀 Escalate to N+1", key=f"{prefix}_n1btn"):
+                            with rc_escalate:
+                                if st.button("N+1", key=f"{prefix}_n1btn"):
                                     update_escalation_status(
                                         case_id, new_status,
                                         action_taken or row.get("action_taken",""),
@@ -902,8 +1012,9 @@ if page == "📊 Main Dashboard":
                                     if n1_email:
                                         send_alert(f"Case {case_id} escalated to N+1.", via="email", recipient=n1_email)
                                     send_alert(f"Case {case_id} escalated to N+1.", via="teams")
-                                    st.success("🚀 Escalated to N+1")
-                            st.markdown("</div>", unsafe_allow_html=True)
+                                    st.success("🚀 Escalated")
+
+                            st.markdown("</div>", unsafe_allow_html=True)  # /controls-panel
                     except Exception as e:
                         st.error(f"Error rendering case #{row.get('id','Unknown')}: {e}")
 
@@ -979,7 +1090,7 @@ if page == "📊 Main Dashboard":
 - **Escalation View** toggles All / Likely / Not Likely / SLA Breach.
 - **SLA capsule** shows high-priority > 10 min outstanding items.
 - **AI Summary** surfaces quick insights.
-- **Totals** reflect filters & search.
+- **Totals** reflect filters & search (compact pill).
 - **Kanban**: Open / In Progress / Resolved, each with KPI chips & controls.
 - **Sidebar**: Upload Excel, fetch emails, Teams/Email alerts, WhatsApp/SMS (Resolved), filters incl. **BU**/**Region** multi-select.
         """)
