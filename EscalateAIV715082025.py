@@ -29,90 +29,12 @@ def _alt_borderize(ch, height=None):
     try:
         import altair as alt
         alt.data_transformers.disable_max_rows()
-if height is not None:
+        if height is not None:
             ch = ch.properties(height=height)
         return (ch.configure_view(stroke='#CBD5E1', strokeWidth=1)
                   .configure_axis(grid=True, domain=True))
     except Exception:
         return ch
-
-
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-
-# Optional TF-IDF for duplicate detection
-try:
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.metrics.pairwise import cosine_similarity as _cosine
-    _TFIDF_AVAILABLE = True
-except Exception:
-    _TFIDF_AVAILABLE = False
-import difflib
-
-from dotenv import load_dotenv
-
-# ==== Admin helpers wiring (robust) =========================================
-import importlib.util as _impspec
-
-__ae_imp_err = None
-__ae_path_err = None
-
-try:
-    from advanced_enhancements import (
-        validate_escalation_schema,
-        ensure_audit_log_table,
-        log_escalation_action,
-        send_whatsapp_message as _ae_send_whatsapp_message,  # optional
-    )
-except Exception as e:
-    __ae_imp_err = e
-    try:
-        _here = os.path.dirname(os.path.abspath(__file__))
-        _ae_path = os.path.join(_here, "advanced_enhancements.py")
-        if os.path.exists(_ae_path):
-            _spec = _impspec.spec_from_file_location("advanced_enhancements", _ae_path)
-            _ae = _impspec.module_from_spec(_spec)
-            _spec.loader.exec_module(_ae)  # type: ignore
-            validate_escalation_schema = getattr(_ae, "validate_escalation_schema")
-            ensure_audit_log_table     = getattr(_ae, "ensure_audit_log_table")
-            log_escalation_action      = getattr(_ae, "log_escalation_action")
-            _ae_send_whatsapp_message  = getattr(_ae, "send_whatsapp_message", None)
-        else:
-            raise FileNotFoundError(f"advanced_enhancements.py not found at {_ae_path}")
-    except Exception as e2:
-        __ae_path_err = e2
-
-        def validate_escalation_schema(*a, **k):
-            return (
-                True,
-                [f"(fallback) advanced_enhancements import failed: {repr(__ae_imp_err)} / {repr(__ae_path_err)}"]
-            )
-
-        def ensure_audit_log_table(*a, **k):
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS audit_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
-                user TEXT,
-                action TEXT,
-                details TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log (timestamp)
-        """)
-        conn.close()
-    except Exception:
-        pass
-
-
-        def log_escalation_action(*a, **k):
-            pass
-
-        _ae_send_whatsapp_message = None
 
 def _safe_send_whatsapp(phone, message):
     fn = _ae_send_whatsapp_message
@@ -195,6 +117,31 @@ TWILIO_AUTH_TOKEN  = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "")
 
 DB_PATH = "escalations.db"
+# --- Safe guard for ensure_audit_log_table (defines if missing) ---
+if 'ensure_audit_log_table' not in globals():
+    def ensure_audit_log_table(*a, **k):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+                    user TEXT,
+                    action TEXT,
+                    details TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log (timestamp)
+                """
+            )
+            conn.close()
+        except Exception:
+            pass
+
 ESCALATION_PREFIX = "SESICE-25"
 analyzer = SentimentIntensityAnalyzer()
 
