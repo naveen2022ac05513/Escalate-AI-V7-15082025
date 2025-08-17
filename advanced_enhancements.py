@@ -130,39 +130,28 @@ def validate_escalation_schema():
     conn.close()
 
 
-def ensure_audit_log_table():
-    """
-    Ensure the audit_log table exists in the DB.
-    """
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS audit_log (
-        timestamp TEXT,
-        action_type TEXT,
-        case_id TEXT,
-        user TEXT,
-        details TEXT
-    )
+def ensure_audit_log_table(db_path: str = DB_PATH):
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT DEFAULT (datetime('now')),
+            action_type TEXT,
+            case_id TEXT,
+            user TEXT,
+            details TEXT
+        )
     """)
     conn.commit()
     conn.close()
 # 🧾 Audit Logger
-def log_escalation_action(action_type, case_id, user, details):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS audit_log (
-        timestamp TEXT,
-        action_type TEXT,
-        case_id TEXT,
-        user TEXT,
-        details TEXT
-    )
-    ''')
-    cursor.execute('''
-    INSERT INTO audit_log VALUES (?, ?, ?, ?, ?)
-    ''', (datetime.datetime.now().isoformat(), action_type, case_id, user, details))
+def log_escalation_action(action_type, case_id, user, details, db_path: str = DB_PATH):
+    ensure_audit_log_table(db_path)
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("INSERT INTO audit_log (timestamp, action_type, case_id, user, details) VALUES (?, ?, ?, ?, ?)",
+                (datetime.datetime.now().isoformat(), action_type, case_id, user, details))
     conn.commit()
     conn.close()
 
