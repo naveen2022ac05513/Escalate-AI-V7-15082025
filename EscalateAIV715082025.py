@@ -22,19 +22,66 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import altair as alt
-alt.data_transformers.disable_max_rows()
 
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
 
-def _alt_borderize(ch, height=None):
+# Optional TF-IDF for duplicate detection
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity as _cosine
+    _TFIDF_AVAILABLE = True
+except Exception:
+    _TFIDF_AVAILABLE = False
+import difflib
+
+from dotenv import load_dotenv
+
+# ==== Admin helpers wiring (robust) =========================================
+import importlib.util as _impspec
+
+__ae_imp_err = None
+__ae_path_err = None
+
+try:
+    from advanced_enhancements import (
+        validate_escalation_schema,
+        ensure_audit_log_table,
+        log_escalation_action,
+        send_whatsapp_message as _ae_send_whatsapp_message,  # optional
+    )
+except Exception as e:
+    __ae_imp_err = e
     try:
-        import altair as alt
-        alt.data_transformers.disable_max_rows()
-        if height is not None:
-            ch = ch.properties(height=height)
-        return (ch.configure_view(stroke='#CBD5E1', strokeWidth=1)
-                  .configure_axis(grid=True, domain=True))
-    except Exception:
-        return ch
+        _here = os.path.dirname(os.path.abspath(__file__))
+        _ae_path = os.path.join(_here, "advanced_enhancements.py")
+        if os.path.exists(_ae_path):
+            _spec = _impspec.spec_from_file_location("advanced_enhancements", _ae_path)
+            _ae = _impspec.module_from_spec(_spec)
+            _spec.loader.exec_module(_ae)  # type: ignore
+            validate_escalation_schema = getattr(_ae, "validate_escalation_schema")
+            ensure_audit_log_table     = getattr(_ae, "ensure_audit_log_table")
+            log_escalation_action      = getattr(_ae, "log_escalation_action")
+            _ae_send_whatsapp_message  = getattr(_ae, "send_whatsapp_message", None)
+        else:
+            raise FileNotFoundError(f"advanced_enhancements.py not found at {_ae_path}")
+    except Exception as e2:
+        __ae_path_err = e2
+
+        def validate_escalation_schema(*a, **k):
+            return (
+                True,
+                [f"(fallback) advanced_enhancements import failed: {repr(__ae_imp_err)} / {repr(__ae_path_err)}"]
+            )
+
+        def ensure_audit_log_table(*a, **k):
+            pass
+
+        def log_escalation_action(*a, **k):
+            pass
+
+        _ae_send_whatsapp_message = None
 
 def _safe_send_whatsapp(phone, message):
     fn = _ae_send_whatsapp_message
@@ -117,31 +164,6 @@ TWILIO_AUTH_TOKEN  = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "")
 
 DB_PATH = "escalations.db"
-# --- Safe guard for ensure_audit_log_table (defines if missing) ---
-if 'ensure_audit_log_table' not in globals():
-    def ensure_audit_log_table(*a, **k):
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS audit_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
-                    user TEXT,
-                    action TEXT,
-                    details TEXT
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log (timestamp)
-                """
-            )
-            conn.close()
-        except Exception:
-            pass
-
 ESCALATION_PREFIX = "SESICE-25"
 analyzer = SentimentIntensityAnalyzer()
 
@@ -449,6 +471,7 @@ def email_polling_job():
         time.sleep(60)
 
 # ---------------- Streamlit UI ----------------
+st.set_page_config(page_title="Escalation Management", layout="wide")
 ensure_schema()
 
 try: validate_escalation_schema()
@@ -474,7 +497,8 @@ st.markdown("""
   .kv{font-size:12px;margin:2px 0;white-space:nowrap;}
   .aisum{background:#0b1220;color:#e5f2ff;padding:10px 12px;border-radius:10px;box-shadow:0 6px 14px rgba(0,0,0,.10);font-size:13px;}
   .sla-pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#ef4444;color:#fff;font-weight:600;font-size:12px;}
-  .totals-pill{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;font-size:0.9rem;font-weight:600;border:1px solid #94a3b8;border-radius:999px;background:linear-gradient(180deg,#f8fafc,#f1f5f9);box-shadow:none;color:#111827;}
+  .totals-pill{display:flex;gap:10px;align-items:center;background:#111827;color:#e5e7eb;padding:8px 12px;border-radius:999px;
+               box-shadow:0 6px 14px rgba(0,0,0,.10); font-size:13px; white-space:nowrap;}
   .totals-pill b{color:#fff;}
   .kpi-panel{ margin-top:0 !important; background:transparent !important; border:0 !important; box-shadow:none !important; padding:0 !important; }
   .kpi-gap{ height:22px !important; }
@@ -806,8 +830,8 @@ if page == "📊 Main Dashboard":
                         try:
                             ts = pd.to_datetime(row.get("timestamp"))
                             dlt = datetime.datetime.now() - ts
-                            age_hours = int(dlt.total_seconds()//3600)
-                            age_str = f"{age_hours} hrs"
+                            days = dlt.days; hours, rem = divmod(dlt.seconds, 3600); minutes, _ = divmod(rem, 60)
+                            age_str = f"{days}d {hours}h {minutes}m"
                             age_col = "#22c55e" if dlt.total_seconds()/3600 < 12 else "#f59e0b" if dlt.total_seconds()/3600 < 24 else "#ef4444"
                         except Exception:
                             age_str, age_col = "N/A", "#6b7280"
@@ -866,9 +890,9 @@ if page == "📊 Main Dashboard":
                                     update_escalation_status(case_id, new_status, action_taken, owner, owner_email)
                                     st.success("✅ Saved")
                             with rc2:
-                                n1_email = st.text_input("", placeholder="N+1 Email ID", label_visibility="collapsed", key=f"{prefix}_n1")
+                                n1_email = st.text_input("N+1 Email ID", key=f"{prefix}_n1")
                             with rc3:
-                                if st.button("🚀 N+1", key=f"{prefix}_n1btn"):
+                                if st.button("🚀 Escalate to N+1", key=f"{prefix}_n1btn"):
                                     update_escalation_status(
                                         case_id, new_status,
                                         action_taken or row.get("action_taken",""),
@@ -978,15 +1002,15 @@ elif page == "📈 BU & Region Trends":
         bu_counts.columns = ["BU","Count"]
         ch_bu = alt.Chart(bu_counts).mark_bar().encode(
             x=alt.X("BU:N", sort="-y"), y=alt.Y("Count:Q"), color="BU:N", tooltip=["BU","Count"]
-        ).properties(title="BU Distribution")
-        ch_bu = _alt_borderize(ch_bu, height=220) + alt.Chart(bu_counts).mark_text(dy=-6).encode(x="BU:N", y="Count:Q", text="Count:Q")
+        ).properties(title="BU Distribution", height=280)
+        st.altair_chart(ch_bu + ch_bu.mark_text(dy=-5).encode(text="Count:Q"), use_container_width=True)
 
         reg_counts = df["region"].astype(str).str.title().value_counts().reset_index()
         reg_counts.columns = ["Region","Count"]
         ch_reg = alt.Chart(reg_counts).mark_bar().encode(
             x=alt.X("Region:N", sort="-y"), y=alt.Y("Count:Q"), color="Region:N", tooltip=["Region","Count"]
-        ).properties(title="Region Distribution")
-        ch_reg = _alt_borderize(ch_reg, height=220) + alt.Chart(reg_counts).mark_text(dy=-6).encode(x="Region:N", y="Count:Q", text="Count:Q")
+        ).properties(title="Region Distribution", height=280)
+        st.altair_chart(ch_reg + ch_reg.mark_text(dy=-5).encode(text="Count:Q"), use_container_width=True)
 
         if "timestamp" in df.columns:
             df["date"] = pd.to_datetime(df["timestamp"], errors='coerce').dt.date
@@ -996,27 +1020,17 @@ elif page == "📈 BU & Region Trends":
                 x=alt.X("date:T", title="Date"), y=alt.Y("Count:Q"),
                 color=alt.Color("bu_code:N", title="BU"),
                 tooltip=["date:T","bu_code:N","Count:Q"]
-            ).properties(title="Daily Trend by BU")
-            ch_t_bu = _alt_borderize(ch_t_bu, height=240)
+            ).properties(title="Daily Trend by BU", height=320)
+            st.altair_chart(ch_t_bu, use_container_width=True)
 
             t_rg = df.groupby(["date", df["region"].astype(str).str.title()]).size().reset_index(name="Count")
             ch_t_rg = alt.Chart(t_rg).mark_line(point=True).encode(
                 x=alt.X("date:T", title="Date"), y=alt.Y("Count:Q"),
                 color=alt.Color("region:N", title="Region"),
                 tooltip=["date:T","region:N","Count:Q"]
-            ).properties(title="Daily Trend by Region")
-            ch_t_rg = _alt_borderize(ch_t_rg, height=240)
+            ).properties(title="Daily Trend by Region", height=320)
+            st.altair_chart(ch_t_rg, use_container_width=True)
 
-            c1, c2 = st.columns(2)
-            with c1: st.altair_chart(ch_bu, use_container_width=True)
-            with c2: st.altair_chart(ch_reg, use_container_width=True)
-            c3, c4 = st.columns(2)
-            with c3: st.altair_chart(ch_t_bu, use_container_width=True)
-            with c4: st.altair_chart(ch_t_rg, use_container_width=True)
-        else:
-            c1, c2 = st.columns(2)
-            with c1: st.altair_chart(ch_bu, use_container_width=True)
-            with c2: st.altair_chart(ch_reg, use_container_width=True)
 elif page == "🔥 SLA Heatmap":
     st.subheader("🔥 SLA Heatmap")
     try: render_sla_heatmap()
