@@ -22,16 +22,20 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import altair as alt
+alt.data_transformers.disable_max_rows()
+
 
 def _alt_borderize(ch, height=None):
     try:
         import altair as alt
+alt.data_transformers.disable_max_rows()
         if height is not None:
             ch = ch.properties(height=height)
         return (ch.configure_view(stroke='#CBD5E1', strokeWidth=1)
                   .configure_axis(grid=True, domain=True))
     except Exception:
         return ch
+
 
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from sklearn.ensemble import RandomForestClassifier
@@ -86,7 +90,24 @@ except Exception as e:
             )
 
         def ensure_audit_log_table(*a, **k):
-            pass
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+                user TEXT,
+                action TEXT,
+                details TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log (timestamp)
+        """)
+        conn.close()
+    except Exception:
+        pass
+
 
         def log_escalation_action(*a, **k):
             pass
@@ -507,7 +528,7 @@ st.markdown("""
   .kv{font-size:12px;margin:2px 0;white-space:nowrap;}
   .aisum{background:#0b1220;color:#e5f2ff;padding:10px 12px;border-radius:10px;box-shadow:0 6px 14px rgba(0,0,0,.10);font-size:13px;}
   .sla-pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#ef4444;color:#fff;font-weight:600;font-size:12px;}
-  .totals-pill{display:inline-flex;gap:6px;align-items:center;background:#111827;color:#e5e7eb;padding:2px 10px;border-radius:999px;box-shadow:0 2px 6px rgba(0,0,0,.08);font-size:12.5px;white-space:nowrap;}
+  .totals-pill{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;font-size:0.9rem;font-weight:600;border:1px solid #94a3b8;border-radius:999px;background:linear-gradient(180deg,#f8fafc,#f1f5f9);box-shadow:none;color:#111827;}
   .totals-pill b{color:#fff;}
   .kpi-panel{ margin-top:0 !important; background:transparent !important; border:0 !important; box-shadow:none !important; padding:0 !important; }
   .kpi-gap{ height:22px !important; }
@@ -839,7 +860,7 @@ if page == "📊 Main Dashboard":
                         try:
                             ts = pd.to_datetime(row.get("timestamp"))
                             dlt = datetime.datetime.now() - ts
-                            age_hours = int(max(0, dlt.total_seconds() // 3600))
+                            age_hours = int(dlt.total_seconds()//3600)
                             age_str = f"{age_hours} hrs"
                             age_col = "#22c55e" if dlt.total_seconds()/3600 < 12 else "#f59e0b" if dlt.total_seconds()/3600 < 24 else "#ef4444"
                         except Exception:
@@ -1011,17 +1032,15 @@ elif page == "📈 BU & Region Trends":
         bu_counts.columns = ["BU","Count"]
         ch_bu = alt.Chart(bu_counts).mark_bar().encode(
             x=alt.X("BU:N", sort="-y"), y=alt.Y("Count:Q"), color="BU:N", tooltip=["BU","Count"]
-        ).properties(title="BU Distribution", height=280)
-        c1, c2 = st.columns(2)
-        with c1:
-            st.altair_chart(_alt_borderize(ch_bu + ch_bu.mark_text(dy=-5).encode(text="Count:Q"), height=220), use_container_width=True)
+        ).properties(title="BU Distribution")
+        ch_bu = _alt_borderize(ch_bu, height=220) + alt.Chart(bu_counts).mark_text(dy=-6).encode(x="BU:N", y="Count:Q", text="Count:Q")
+
         reg_counts = df["region"].astype(str).str.title().value_counts().reset_index()
         reg_counts.columns = ["Region","Count"]
         ch_reg = alt.Chart(reg_counts).mark_bar().encode(
             x=alt.X("Region:N", sort="-y"), y=alt.Y("Count:Q"), color="Region:N", tooltip=["Region","Count"]
-        ).properties(title="Region Distribution", height=280)
-        with c2:
-            st.altair_chart(_alt_borderize(ch_reg + ch_reg.mark_text(dy=-5).encode(text="Count:Q"), height=220), use_container_width=True)
+        ).properties(title="Region Distribution")
+        ch_reg = _alt_borderize(ch_reg, height=220) + alt.Chart(reg_counts).mark_text(dy=-6).encode(x="Region:N", y="Count:Q", text="Count:Q")
 
         if "timestamp" in df.columns:
             df["date"] = pd.to_datetime(df["timestamp"], errors='coerce').dt.date
@@ -1031,20 +1050,27 @@ elif page == "📈 BU & Region Trends":
                 x=alt.X("date:T", title="Date"), y=alt.Y("Count:Q"),
                 color=alt.Color("bu_code:N", title="BU"),
                 tooltip=["date:T","bu_code:N","Count:Q"]
-            ).properties(title="Daily Trend by BU", height=320)
-            c3, c4 = st.columns(2)
-            with c3:
-                st.altair_chart(_alt_borderize(ch_t_bu, height=240), use_container_width=True)
+            ).properties(title="Daily Trend by BU")
+            ch_t_bu = _alt_borderize(ch_t_bu, height=240)
 
             t_rg = df.groupby(["date", df["region"].astype(str).str.title()]).size().reset_index(name="Count")
             ch_t_rg = alt.Chart(t_rg).mark_line(point=True).encode(
                 x=alt.X("date:T", title="Date"), y=alt.Y("Count:Q"),
                 color=alt.Color("region:N", title="Region"),
                 tooltip=["date:T","region:N","Count:Q"]
-            ).properties(title="Daily Trend by Region", height=320)
-            with c4:
-                st.altair_chart(_alt_borderize(ch_t_rg, height=240), use_container_width=True)
+            ).properties(title="Daily Trend by Region")
+            ch_t_rg = _alt_borderize(ch_t_rg, height=240)
 
+            c1, c2 = st.columns(2)
+            with c1: st.altair_chart(ch_bu, use_container_width=True)
+            with c2: st.altair_chart(ch_reg, use_container_width=True)
+            c3, c4 = st.columns(2)
+            with c3: st.altair_chart(ch_t_bu, use_container_width=True)
+            with c4: st.altair_chart(ch_t_rg, use_container_width=True)
+        else:
+            c1, c2 = st.columns(2)
+            with c1: st.altair_chart(ch_bu, use_container_width=True)
+            with c2: st.altair_chart(ch_reg, use_container_width=True)
 elif page == "🔥 SLA Heatmap":
     st.subheader("🔥 SLA Heatmap")
     try: render_sla_heatmap()
@@ -1070,81 +1096,25 @@ elif page == "⚙️ Admin Tools":
                 st.error(f"❌ Schema validation failed: {e}")
 
         st.subheader("📄 Audit Log Preview")
+        try:
+            ensure_audit_log_table()
+            log_escalation_action("init","N/A","system","Initializing audit log table")
+            conn = sqlite3.connect(DB_PATH)
+            df = pd.read_sql("SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT 100", conn)
+            conn.close()
+            st.dataframe(df)
+        except Exception as e:
+            st.warning("⚠️ Audit log not available."); st.exception(e)
 
-        st.subheader("🧪 Developer Options")
-        with st.expander("Reset Database (fetch fresh data)"):
-            st.caption("⚠️ Use with care. Soft Reset deletes rows; Hard Reset drops tables and recreates audit log.")
-            try:
-                conn = sqlite3.connect(DB_PATH)
-                cur = conn.cursor()
-                cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                tables = [r[0] for r in cur.fetchall() if not r[0].startswith('sqlite_')]
-                if not tables:
-                    st.info("No user tables found.")
-                else:
-                    sel = st.multiselect("Select tables to act on", options=tables, default=tables, key="db_sel_tables")
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        if st.button("🧹 Soft Reset (DELETE rows)", key="soft_reset"):
-                            try:
-                                for t in sel:
-                                    cur.execute(f"DELETE FROM {t}")
-                                conn.commit()
-                                try:
-                                    log_escalation_action("soft_reset", "N/A", "admin", f"Cleared tables: {', '.join(sel)}")
-                                except Exception: pass
-                                st.success("✅ Soft reset completed.")
-                            except Exception as e:
-                                st.error(f"❌ Soft reset failed: {e}")
-                    with c2:
-                        confirm = st.text_input("Type DROP to confirm hard reset", key="hard_confirm")
-                        if st.button("🧨 Hard Reset (DROP tables)", key="hard_reset"):
-                            if confirm.strip().upper() == "DROP":
-                                try:
-                                    for t in sel:
-                                        cur.execute(f"DROP TABLE IF EXISTS {t}")
-                                    conn.commit()
-                                    # recreate audit log table
-                                    try:
-                                        ensure_audit_log_table()
-                                    except Exception: pass
-                                    st.success("✅ Hard reset completed. Recreated audit log table.")
-                                except Exception as e:
-                                    st.error(f"❌ Hard reset failed: {e}")
-                            else:
-                                st.warning("Please type DROP to confirm.")
-                conn.close()
-            except Exception as e:
-                st.error(f"Reset error: {e}")
-            # Make sure this import exists near the top of the file:
-            # from advanced_enhancements import ensure_audit_log_table
-            
-            try:
-                # Initialize/verify the audit log table (helper from advanced_enhancements)
-                ensure_audit_log_table()
-            except Exception as e:
-                # Fallback: create the table here if the helper isn't available or fails
-                import sqlite3
-                try:
-                    with conn:
-                        conn.execute("""
-                            CREATE TABLE IF NOT EXISTS audit_log (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                timestamp TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
-                                user TEXT,
-                                action TEXT,
-                                details TEXT
-                            )
-                        """)
-                        # Optional: index for faster sorting by timestamp
-                        conn.execute("""
-                            CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp
-                            ON audit_log (timestamp)
-                        """)
-                except Exception as e2:
-                    # Visible error so Admin Tools doesn't crash silently
-                    st.error(f"Audit log init failed: {e2}")
-
+        st.subheader("📝 Manual Audit Entry")
+        with st.form("manual_log"):
+            action = st.text_input("Action Type"); case_id = st.text_input("Case ID")
+            user = st.text_input("User"); details = st.text_area("Details")
+            if st.form_submit_button("Log Action"):
+                try: log_escalation_action(action, case_id, user, details); st.success("✅ Action logged.")
+                except Exception as e: st.error(f"❌ Failed to log action: {e}")
+    try: show_admin_panel()
+    except Exception as e: st.info("Admin tools not available."); st.exception(e)
 
 # Background workers
 if 'email_thread' not in st.session_state:
