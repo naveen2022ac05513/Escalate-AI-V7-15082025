@@ -25,3 +25,5 @@ streamlit-authenticator>=0.2.2  # 🔐 Role-based access control
 xhtml2pdf>=0.2.5
 fpdf
 shap
+
+altair>=5.1.0
