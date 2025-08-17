@@ -834,39 +834,6 @@ with cr:
             with open(out,"rb") as f: st.sidebar.download_button("Download Excel", f, file_name=out,
                                                          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-# Sidebar: developer
-st.sidebar.markdown("### 🧪 Developer")
-dev_cols = st.sidebar.columns(3)
-with dev_cols[0]:
-    if st.sidebar.button("Force Rerun"):
-        st.rerun()
-with dev_cols[1]:
-    if st.sidebar.button("Send Daily Email"):
-        try:
-            send_daily_escalation_email()
-            st.sidebar.success("✅ Daily escalation email sent.")
-        except Exception as e:
-            st.sidebar.error(f"Daily email failed: {e}")
-with dev_cols[2]:
-    if st.sidebar.button("Reset DB"):
-        try:
-            conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
-            cur.execute("DROP TABLE IF EXISTS escalations")
-            cur.execute("DROP TABLE IF EXISTS processed_hashes")
-            conn.commit(); conn.close()
-            # Note: clear only (do not reassign) to avoid 'global before assignment'
-            global_seen_hashes.clear()
-            st.sidebar.warning("Database reset. Please restart or refresh the app.")
-        except Exception as e:
-            st.sidebar.error(f"Reset failed: {e}")
-
-auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh", value=False)
-refresh_interval = st.sidebar.slider("Refresh Interval (sec)", 10, 60, 30)
-if auto_refresh: time.sleep(refresh_interval); st.rerun()
-if st.sidebar.checkbox("🌙 Dark Mode"):
-    try: apply_dark_mode()
-    except Exception: pass
-
 # Helpers
 def filter_df_by_query(df: pd.DataFrame, query: str) -> pd.DataFrame:
     if not query or df.empty: return df
@@ -1388,3 +1355,36 @@ def schedule_daily_email():
 
 if 'daily_email_thread' not in st.session_state:
     schedule_daily_email(); st.session_state['daily_email_thread']=True
+
+# Sidebar: developer
+st.sidebar.markdown("### 🧪 Developer")
+dev_cols = st.sidebar.columns(3)
+with dev_cols[0]:
+    if st.sidebar.button("Force Rerun"):
+        st.rerun()
+with dev_cols[1]:
+    if st.sidebar.button("Send Daily Email"):
+        try:
+            send_daily_escalation_email()
+            st.sidebar.success("✅ Daily escalation email sent.")
+        except Exception as e:
+            st.sidebar.error(f"Daily email failed: {e}")
+with dev_cols[2]:
+    if st.sidebar.button("Reset DB"):
+        try:
+            conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+            cur.execute("DROP TABLE IF EXISTS escalations")
+            cur.execute("DROP TABLE IF EXISTS processed_hashes")
+            conn.commit(); conn.close()
+            # Note: clear only (do not reassign) to avoid 'global before assignment'
+            global_seen_hashes.clear()
+            st.sidebar.warning("Database reset. Please restart or refresh the app.")
+        except Exception as e:
+            st.sidebar.error(f"Reset failed: {e}")
+
+auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh", value=False)
+refresh_interval = st.sidebar.slider("Refresh Interval (sec)", 10, 60, 30)
+if auto_refresh: time.sleep(refresh_interval); st.rerun()
+if st.sidebar.checkbox("🌙 Dark Mode"):
+    try: apply_dark_mode()
+    except Exception: pass
