@@ -25,10 +25,11 @@ import altair as alt
 alt.data_transformers.disable_max_rows()
 
 
-def _alt_borderize(ch, height=None):
+def add_altair_border(ch, height=None):
     try:
         import altair as alt
-alt.data_transformers.disable_max_rows()
+        alt.data_transformers.disable_max_rows()
+
         if height is not None:
             ch = ch.properties(height=height)
         return (ch.configure_view(stroke='#CBD5E1', strokeWidth=1)
