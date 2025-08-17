@@ -2,14 +2,11 @@
 # --------------------------------------------------------------------
 # EscalateAI — Customer Escalation Prediction & Management Tool
 # --------------------------------------------------------------------
-# - SLA capsule + AI summary
-# - Totals pill (compact, auto-width) + compact search
-# - Sidebar: MS Teams/Email, WhatsApp/SMS (Resolved only), Filters incl. BU/Region (multi-select)
-# - Duplicate detection; Reset clears DB & in-memory set
-# - BU/Region enrichment
-# - Trends for BU & Region
-# - Robust admin wiring & enhancement dashboard import
-# - Expander polished (glass), Age chip (hours only), N+1 inline with Save, 2×2 Advanced Analytics
+# - Hours-only age chip
+# - Save → N+1 Email → 🚀 N+1 (inline)
+# - Totals pill (auto-width), compact search
+# - Advanced Analytics 2×2 (Altair layering helper to avoid padding error)
+# - Glass-style expander, BU/Region multi-select
 # --------------------------------------------------------------------
 
 import os, re, time, datetime, threading, hashlib, sqlite3, smtplib, requests, imaplib, email, traceback
@@ -38,10 +35,9 @@ except Exception:
 import difflib
 
 from dotenv import load_dotenv
-
-# ==== Admin helpers wiring (robust) =========================================
 import importlib.util as _impspec
 
+# ===================== Admin helpers wiring (robust) =========================
 __ae_imp_err = None
 __ae_path_err = None
 
@@ -50,7 +46,7 @@ try:
         validate_escalation_schema,
         ensure_audit_log_table,
         log_escalation_action,
-        send_whatsapp_message as _ae_send_whatsapp_message,  # optional
+        send_whatsapp_message as _ae_send_whatsapp_message,
     )
 except Exception as e:
     __ae_imp_err = e
@@ -69,19 +65,9 @@ except Exception as e:
             raise FileNotFoundError(f"advanced_enhancements.py not found at {_ae_path}")
     except Exception as e2:
         __ae_path_err = e2
-
-        def validate_escalation_schema(*a, **k):
-            return (
-                True,
-                [f"(fallback) advanced_enhancements import failed: {repr(__ae_imp_err)} / {repr(__ae_path_err)}"]
-            )
-
-        def ensure_audit_log_table(*a, **k):
-            pass
-
-        def log_escalation_action(*a, **k):
-            pass
-
+        def validate_escalation_schema(*a, **k): return (True, [f"(fallback) enhancements import failed: {repr(__ae_imp_err)} / {repr(__ae_path_err)}"])
+        def ensure_audit_log_table(*a, **k): pass
+        def log_escalation_action(*a, **k): pass
         _ae_send_whatsapp_message = None
 
 def _safe_send_whatsapp(phone, message):
@@ -130,7 +116,39 @@ except Exception:
     def summarize_escalations(): return "No summary available."
     def schedule_weekly_retraining(): pass
 
-# ---------------- Quick analytics view (NEW 2×2) ----------------
+# ======================== Altair Layering Helper =============================
+def _bar_with_labels(df, x_field, y_field, title=None, height=240):
+    """
+    Build a layered bar chart with value labels safely:
+    - Build bars + labels as separate charts WITHOUT properties(padding=...) on children.
+    - Apply properties ONLY on the layered chart to avoid Altair LayerChart padding error.
+    """
+    if df is None or df.empty:
+        return None
+
+    base = alt.Chart(df)
+    bars = base.mark_bar().encode(
+        x=alt.X(f"{x_field}:N", sort='-y', title=None),
+        y=alt.Y(f"{y_field}:Q", title=None),
+        color=alt.Color(f"{x_field}:N", legend=None),
+        tooltip=[alt.Tooltip(f"{x_field}:N"), alt.Tooltip(f"{y_field}:Q")]
+    )
+
+    labels = base.mark_text(dy=-6).encode(
+        x=alt.X(f"{x_field}:N", sort='-y'),
+        y=alt.Y(f"{y_field}:Q"),
+        text=alt.Text(f"{y_field}:Q")
+    )
+
+    layered = alt.layer(bars, labels).properties(
+        height=height,
+        title=title
+    ).configure_view(strokeWidth=0)
+
+    return layered
+# ============================================================================
+
+# ---------------- Quick analytics view (2×2, uses helper) -------------------
 def show_analytics_view():
     df = fetch_escalations()
     st.title("📊 Advanced Analytics")
@@ -157,7 +175,7 @@ def show_analytics_view():
                 x=alt.X('date:T', title=None, axis=alt.Axis(labelOverlap=True, ticks=False)),
                 y=alt.Y('count:Q', title=None),
                 tooltip=['date:T','count:Q']
-            ).properties(height=240, padding={"left":10,"right":10,"top":10,"bottom":10})
+            ).properties(height=240)
             st.altair_chart(ch, use_container_width=True)
         else:
             st.info("No dated records.")
@@ -168,13 +186,8 @@ def show_analytics_view():
         sev = df['severity'].value_counts().reset_index()
         sev.columns = ['severity','count']
         if not sev.empty:
-            ch = alt.Chart(sev).mark_bar().encode(
-                x=alt.X('severity:N', sort='-y', title=None),
-                y=alt.Y('count:Q', title=None),
-                tooltip=['severity:N','count:Q'],
-                color='severity:N'
-            ).properties(height=240, padding={"left":10,"right":10,"top":10,"bottom":10})
-            st.altair_chart(ch + ch.mark_text(dy=-6).encode(text='count:Q'), use_container_width=True)
+            chart = _bar_with_labels(sev, x_field="severity", y_field="count", title=None, height=240)
+            st.altair_chart(chart, use_container_width=True)
         else:
             st.info("No severity data.")
 
@@ -186,13 +199,8 @@ def show_analytics_view():
         sent = df['sentiment'].value_counts().reset_index()
         sent.columns = ['sentiment','count']
         if not sent.empty:
-            ch = alt.Chart(sent).mark_bar().encode(
-                x=alt.X('sentiment:N', sort='-y', title=None),
-                y=alt.Y('count:Q', title=None),
-                tooltip=['sentiment:N','count:Q'],
-                color='sentiment:N'
-            ).properties(height=240, padding={"left":10,"right":10,"top":10,"bottom":10})
-            st.altair_chart(ch + ch.mark_text(dy=-6).encode(text='count:Q'), use_container_width=True)
+            chart = _bar_with_labels(sent, x_field="sentiment", y_field="count", title=None, height=240)
+            st.altair_chart(chart, use_container_width=True)
         else:
             st.info("No sentiment data.")
 
@@ -206,13 +214,8 @@ def show_analytics_view():
             bucket = pd.cut(hrs, bins=bins, labels=labels)
             ag = bucket.value_counts().reindex(labels, fill_value=0).reset_index()
             ag.columns = ['bucket','count']
-            ch = alt.Chart(ag).mark_bar().encode(
-                x=alt.X('bucket:N', title=None),
-                y=alt.Y('count:Q', title=None),
-                tooltip=['bucket:N','count:Q'],
-                color='bucket:N'
-            ).properties(height=240, padding={"left":10,"right":10,"top":10,"bottom":10})
-            st.altair_chart(ch + ch.mark_text(dy=-6).encode(text='count:Q'), use_container_width=True)
+            chart = _bar_with_labels(ag, x_field="bucket", y_field="count", title=None, height=240)
+            st.altair_chart(chart, use_container_width=True)
         else:
             st.info("No timestamps to compute ageing.")
 
@@ -546,7 +549,7 @@ ensure_schema()
 try: validate_escalation_schema()
 except Exception: pass
 
-# Styles (expanded; glass expander, compact totals, N+1 alignment)
+# Styles (glass expander, compact totals, controls alignment)
 st.markdown("""
 <style>
   .sticky-header{position:sticky;top:0;z-index:999;background:linear-gradient(135deg,#0ea5e9 0%,#7c3aed 100%);
@@ -556,7 +559,7 @@ st.markdown("""
   .kanban-title{display:flex;justify-content:center;align-items:center;gap:8px;border-radius:10px;
     padding:8px 10px;color:#fff;text-align:center;box-shadow:0 6px 14px rgba(0,0,0,.07);margin:4px 0;font-size:14px;}
 
-  /* GLASS EXPANDER — looks awesome */
+  /* GLASS EXPANDER */
   details[data-testid="stExpander"]{
     background: linear-gradient(180deg, rgba(255,255,255,.80), rgba(255,255,255,.66));
     backdrop-filter: blur(8px);
@@ -611,10 +614,8 @@ st.markdown("""
     background:#f3f4f6 !important; border:1px solid #e5e7eb !important; border-radius:8px !important; min-height:40px !important; padding:6px 10px !important; align-items:center !important;
   }
 
-  /* Buttons alignment & small spacer */
   .controls-panel .stButton>button{ height:40px !important; border-radius:10px !important; padding:0 14px !important; margin-top:4px !important; }
   .small-search input{height:38px !important; font-size:13px !important;}
-  .spacer-h{height:8px;}
 </style>
 <div class="sticky-header"><h1>🚨 EscalateAI – AI Based Customer Escalation Prediction & Management Tool</h1></div>
 """, unsafe_allow_html=True)
@@ -991,18 +992,19 @@ if page == "📊 Main Dashboard":
                             with rb2:
                                 owner_email = st.text_input("Owner Email", row.get("owner_email",""), key=f"{prefix}_email")
 
-                            # Row C: N+1 Email | spacer | Save | N+1
-                            rc_email, rc_sp, rc_save, rc_escalate = st.columns([2.0, 0.15, 0.9, 0.9])
-                            with rc_email:
-                                n1_email = st.text_input("N+1 Email", key=f"{prefix}_n1", placeholder="name@example.com")
-                            with rc_sp:
-                                st.markdown("<div class='spacer-h'></div>", unsafe_allow_html=True)
+                            # Row C: Save | N+1 Email | 🚀 N+1
+                            rc_save, rc_email, rc_escalate = st.columns([0.9, 2.0, 1.1])
+
                             with rc_save:
                                 if st.button("💾 Save", key=f"{prefix}_save"):
                                     update_escalation_status(case_id, new_status, action_taken, owner, owner_email)
                                     st.success("✅ Saved")
+
+                            with rc_email:
+                                n1_email = st.text_input("N+1 Email", key=f"{prefix}_n1", placeholder="name@example.com")
+
                             with rc_escalate:
-                                if st.button("N+1", key=f"{prefix}_n1btn"):
+                                if st.button("🚀 N+1", key=f"{prefix}_n1btn"):
                                     update_escalation_status(
                                         case_id, new_status,
                                         action_taken or row.get("action_taken",""),
@@ -1088,11 +1090,11 @@ if page == "📊 Main Dashboard":
         st.subheader("ℹ️ How this Dashboard Works")
         st.markdown("""
 - **Escalation View** toggles All / Likely / Not Likely / SLA Breach.
-- **SLA capsule** shows high-priority > 10 min outstanding items.
+- **SLA** capsule shows high‑priority >10m outstanding items.
 - **AI Summary** surfaces quick insights.
 - **Totals** reflect filters & search (compact pill).
-- **Kanban**: Open / In Progress / Resolved, each with KPI chips & controls.
-- **Sidebar**: Upload Excel, fetch emails, Teams/Email alerts, WhatsApp/SMS (Resolved), filters incl. **BU**/**Region** multi-select.
+- **Kanban**: KPI chips & controls with **Save → N+1 Email → 🚀 N+1**.
+- **Sidebar**: Upload Excel, fetch emails, Teams/Email alerts, WhatsApp/SMS (Resolved), filters incl. **BU/Region** multi‑select.
         """)
 
 elif page == "📈 Advanced Analytics":
@@ -1111,17 +1113,13 @@ elif page == "📈 BU & Region Trends":
                                    city_col="City" if "City" in df.columns else "city")
         bu_counts = df["bu_code"].astype(str).str.upper().replace({"SP":"SPIBS","PP":"PPIBS","PS":"PSIBS","IA":"IDIBS"}).value_counts().reset_index()
         bu_counts.columns = ["BU","Count"]
-        ch_bu = alt.Chart(bu_counts).mark_bar().encode(
-            x=alt.X("BU:N", sort="-y"), y=alt.Y("Count:Q"), color="BU:N", tooltip=["BU","Count"]
-        ).properties(title="BU Distribution", height=280)
-        st.altair_chart(ch_bu + ch_bu.mark_text(dy=-5).encode(text="Count:Q"), use_container_width=True)
+        chart = _bar_with_labels(bu_counts, x_field="BU", y_field="Count", title="BU Distribution", height=280)
+        st.altair_chart(chart, use_container_width=True)
 
         reg_counts = df["region"].astype(str).str.title().value_counts().reset_index()
         reg_counts.columns = ["Region","Count"]
-        ch_reg = alt.Chart(reg_counts).mark_bar().encode(
-            x=alt.X("Region:N", sort="-y"), y=alt.Y("Count:Q"), color="Region:N", tooltip=["Region","Count"]
-        ).properties(title="Region Distribution", height=280)
-        st.altair_chart(ch_reg + ch_reg.mark_text(dy=-5).encode(text="Count:Q"), use_container_width=True)
+        chart = _bar_with_labels(reg_counts, x_field="Region", y_field="Count", title="Region Distribution", height=280)
+        st.altair_chart(chart, use_container_width=True)
 
         if "timestamp" in df.columns:
             df["date"] = pd.to_datetime(df["timestamp"], errors='coerce').dt.date
