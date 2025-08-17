@@ -23,6 +23,16 @@ import numpy as np
 import streamlit as st
 import altair as alt
 
+def _alt_borderize(ch, height=None):
+    try:
+        import altair as alt
+        if height is not None:
+            ch = ch.properties(height=height)
+        return (ch.configure_view(stroke='#CBD5E1', strokeWidth=1)
+                  .configure_axis(grid=True, domain=True))
+    except Exception:
+        return ch
+
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
@@ -497,8 +507,7 @@ st.markdown("""
   .kv{font-size:12px;margin:2px 0;white-space:nowrap;}
   .aisum{background:#0b1220;color:#e5f2ff;padding:10px 12px;border-radius:10px;box-shadow:0 6px 14px rgba(0,0,0,.10);font-size:13px;}
   .sla-pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#ef4444;color:#fff;font-weight:600;font-size:12px;}
-  .totals-pill{display:flex;gap:10px;align-items:center;background:#111827;color:#e5e7eb;height:40px;padding:0 12px;border-radius:999px;
-               box-shadow:0 6px 14px rgba(0,0,0,.10); font-size:13px; white-space:nowrap;}
+  .totals-pill{display:inline-flex;gap:6px;align-items:center;background:#111827;color:#e5e7eb;padding:2px 10px;border-radius:999px;box-shadow:0 2px 6px rgba(0,0,0,.08);font-size:12.5px;white-space:nowrap;}
   .totals-pill b{color:#fff;}
   .kpi-panel{ margin-top:0 !important; background:transparent !important; border:0 !important; box-shadow:none !important; padding:0 !important; }
   .kpi-gap{ height:22px !important; }
@@ -830,9 +839,8 @@ if page == "📊 Main Dashboard":
                         try:
                             ts = pd.to_datetime(row.get("timestamp"))
                             dlt = datetime.datetime.now() - ts
-                            days = dlt.days; hours, rem = divmod(dlt.seconds, 3600); minutes, _ = divmod(rem, 60)
-                            total_hours = int(dlt.total_seconds() // 3600)
-                            age_str = f"{total_hours} hrs"
+                            age_hours = int(max(0, dlt.total_seconds() // 3600))
+                            age_str = f"{age_hours} hrs"
                             age_col = "#22c55e" if dlt.total_seconds()/3600 < 12 else "#f59e0b" if dlt.total_seconds()/3600 < 24 else "#ef4444"
                         except Exception:
                             age_str, age_col = "N/A", "#6b7280"
@@ -891,7 +899,7 @@ if page == "📊 Main Dashboard":
                                     update_escalation_status(case_id, new_status, action_taken, owner, owner_email)
                                     st.success("✅ Saved")
                             with rc2:
-                                n1_email = st.text_input("", key=f"{prefix}_n1", placeholder="N+1 Email ID", label_visibility="collapsed")
+                                n1_email = st.text_input("", placeholder="N+1 Email ID", label_visibility="collapsed", key=f"{prefix}_n1")
                             with rc3:
                                 if st.button("🚀 N+1", key=f"{prefix}_n1btn"):
                                     update_escalation_status(
@@ -989,7 +997,6 @@ elif page == "📈 Advanced Analytics":
     try: show_analytics_view()
     except Exception as e: st.error("❌ Failed to load analytics view."); st.exception(e)
 
-
 elif page == "📈 BU & Region Trends":
     st.subheader("📈 BU & Region Trends")
     df = fetch_escalations()
@@ -1002,43 +1009,41 @@ elif page == "📈 BU & Region Trends":
                                    city_col="City" if "City" in df.columns else "city")
         bu_counts = df["bu_code"].astype(str).str.upper().replace({"SP":"SPIBS","PP":"PPIBS","PS":"PSIBS","IA":"IDIBS"}).value_counts().reset_index()
         bu_counts.columns = ["BU","Count"]
+        ch_bu = alt.Chart(bu_counts).mark_bar().encode(
+            x=alt.X("BU:N", sort="-y"), y=alt.Y("Count:Q"), color="BU:N", tooltip=["BU","Count"]
+        ).properties(title="BU Distribution", height=280)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.altair_chart(_alt_borderize(ch_bu + ch_bu.mark_text(dy=-5).encode(text="Count:Q"), height=220), use_container_width=True)
         reg_counts = df["region"].astype(str).str.title().value_counts().reset_index()
         reg_counts.columns = ["Region","Count"]
+        ch_reg = alt.Chart(reg_counts).mark_bar().encode(
+            x=alt.X("Region:N", sort="-y"), y=alt.Y("Count:Q"), color="Region:N", tooltip=["Region","Count"]
+        ).properties(title="Region Distribution", height=280)
+        with c2:
+            st.altair_chart(_alt_borderize(ch_reg + ch_reg.mark_text(dy=-5).encode(text="Count:Q"), height=220), use_container_width=True)
 
-        try:
-            ch_bu = alt.Chart(bu_counts).mark_bar().encode(
-                x=alt.X("BU:N", sort="-y"), y=alt.Y("Count:Q"), color="BU:N", tooltip=["BU","Count"]
-            ).properties(title="BU Distribution", height=220)
-            ch_reg = alt.Chart(reg_counts).mark_bar().encode(
-                x=alt.X("Region:N", sort="-y"), y=alt.Y("Count:Q"), color="Region:N", tooltip=["Region","Count"]
-            ).properties(title="Region Distribution", height=220)
+        if "timestamp" in df.columns:
+            df["date"] = pd.to_datetime(df["timestamp"], errors='coerce').dt.date
+            t_bu = df.groupby(["date", df["bu_code"].astype(str).str.upper()]).size().reset_index(name="Count")
+            t_bu["bu_code"] = t_bu["bu_code"].replace({"SP":"SPIBS","PP":"PPIBS","PS":"PSIBS","IA":"IDIBS"})
+            ch_t_bu = alt.Chart(t_bu).mark_line(point=True).encode(
+                x=alt.X("date:T", title="Date"), y=alt.Y("Count:Q"),
+                color=alt.Color("bu_code:N", title="BU"),
+                tooltip=["date:T","bu_code:N","Count:Q"]
+            ).properties(title="Daily Trend by BU", height=320)
+            c3, c4 = st.columns(2)
+            with c3:
+                st.altair_chart(_alt_borderize(ch_t_bu, height=240), use_container_width=True)
 
-            top1, top2 = st.columns(2)
-            with top1: st.altair_chart(ch_bu + ch_bu.mark_text(dy=-5).encode(text="Count:Q"), use_container_width=True)
-            with top2: st.altair_chart(ch_reg + ch_reg.mark_text(dy=-5).encode(text="Count:Q"), use_container_width=True)
-
-            if "timestamp" in df.columns:
-                df["date"] = pd.to_datetime(df["timestamp"], errors='coerce').dt.date
-                t_bu = df.groupby(["date", df["bu_code"].astype(str).str.upper()]).size().reset_index(name="Count")
-                t_bu["bu_code"] = t_bu["bu_code"].replace({"SP":"SPIBS","PP":"PPIBS","PS":"PSIBS","IA":"IDIBS"})
-                ch_t_bu = alt.Chart(t_bu).mark_line(point=True).encode(
-                    x=alt.X("date:T", title="Date"), y=alt.Y("Count:Q"),
-                    color=alt.Color("bu_code:N", title="BU"),
-                    tooltip=["date:T","bu_code:N","Count:Q"]
-                ).properties(title="Daily Trend by BU", height=240)
-
-                t_rg = df.groupby(["date", df["region"].astype(str).str.title()]).size().reset_index(name="Count")
-                ch_t_rg = alt.Chart(t_rg).mark_line(point=True).encode(
-                    x=alt.X("date:T", title="Date"), y=alt.Y("Count:Q"),
-                    color=alt.Color("region:N", title="Region"),
-                    tooltip=["date:T","region:N","Count:Q"]
-                ).properties(title="Daily Trend by Region", height=240)
-
-                bot1, bot2 = st.columns(2)
-                with bot1: st.altair_chart(ch_t_bu, use_container_width=True)
-                with bot2: st.altair_chart(ch_t_rg, use_container_width=True)
-        except Exception as e:
-            st.warning(f"Charts unavailable: {type(e).__name__}: {e}")
+            t_rg = df.groupby(["date", df["region"].astype(str).str.title()]).size().reset_index(name="Count")
+            ch_t_rg = alt.Chart(t_rg).mark_line(point=True).encode(
+                x=alt.X("date:T", title="Date"), y=alt.Y("Count:Q"),
+                color=alt.Color("region:N", title="Region"),
+                tooltip=["date:T","region:N","Count:Q"]
+            ).properties(title="Daily Trend by Region", height=320)
+            with c4:
+                st.altair_chart(_alt_borderize(ch_t_rg, height=240), use_container_width=True)
 
 elif page == "🔥 SLA Heatmap":
     st.subheader("🔥 SLA Heatmap")
@@ -1065,7 +1070,53 @@ elif page == "⚙️ Admin Tools":
                 st.error(f"❌ Schema validation failed: {e}")
 
         st.subheader("📄 Audit Log Preview")
-        try:
+
+        st.subheader("🧪 Developer Options")
+        with st.expander("Reset Database (fetch fresh data)"):
+            st.caption("⚠️ Use with care. Soft Reset deletes rows; Hard Reset drops tables and recreates audit log.")
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                cur = conn.cursor()
+                cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = [r[0] for r in cur.fetchall() if not r[0].startswith('sqlite_')]
+                if not tables:
+                    st.info("No user tables found.")
+                else:
+                    sel = st.multiselect("Select tables to act on", options=tables, default=tables, key="db_sel_tables")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("🧹 Soft Reset (DELETE rows)", key="soft_reset"):
+                            try:
+                                for t in sel:
+                                    cur.execute(f"DELETE FROM {t}")
+                                conn.commit()
+                                try:
+                                    log_escalation_action("soft_reset", "N/A", "admin", f"Cleared tables: {', '.join(sel)}")
+                                except Exception: pass
+                                st.success("✅ Soft reset completed.")
+                            except Exception as e:
+                                st.error(f"❌ Soft reset failed: {e}")
+                    with c2:
+                        confirm = st.text_input("Type DROP to confirm hard reset", key="hard_confirm")
+                        if st.button("🧨 Hard Reset (DROP tables)", key="hard_reset"):
+                            if confirm.strip().upper() == "DROP":
+                                try:
+                                    for t in sel:
+                                        cur.execute(f"DROP TABLE IF EXISTS {t}")
+                                    conn.commit()
+                                    # recreate audit log table
+                                    try:
+                                        ensure_audit_log_table()
+                                    except Exception: pass
+                                    st.success("✅ Hard reset completed. Recreated audit log table.")
+                                except Exception as e:
+                                    st.error(f"❌ Hard reset failed: {e}")
+                            else:
+                                st.warning("Please type DROP to confirm.")
+                conn.close()
+            except Exception as e:
+                st.error(f"Reset error: {e}")
+            try:
             ensure_audit_log_table()
             log_escalation_action("init","N/A","system","Initializing audit log table")
             conn = sqlite3.connect(DB_PATH)
