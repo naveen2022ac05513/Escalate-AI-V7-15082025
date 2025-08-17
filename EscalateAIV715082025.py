@@ -1116,25 +1116,35 @@ elif page == "⚙️ Admin Tools":
                 conn.close()
             except Exception as e:
                 st.error(f"Reset error: {e}")
+            # Make sure this import exists near the top of the file:
+            # from advanced_enhancements import ensure_audit_log_table
+            
             try:
+                # Initialize/verify the audit log table (helper from advanced_enhancements)
                 ensure_audit_log_table()
-                log_escalation_action("init","N/A","system","Initializing audit log table")
-                conn = sqlite3.connect(DB_PATH)
-                df = pd.read_sql("SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT 100", conn)
-                conn.close()
-                st.dataframe(df)
-        except Exception as e:
-            st.warning("⚠️ Audit log not available."); st.exception(e)
+            except Exception as e:
+                # Fallback: create the table here if the helper isn't available or fails
+                import sqlite3
+                try:
+                    with conn:
+                        conn.execute("""
+                            CREATE TABLE IF NOT EXISTS audit_log (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                timestamp TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+                                user TEXT,
+                                action TEXT,
+                                details TEXT
+                            )
+                        """)
+                        # Optional: index for faster sorting by timestamp
+                        conn.execute("""
+                            CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp
+                            ON audit_log (timestamp)
+                        """)
+                except Exception as e2:
+                    # Visible error so Admin Tools doesn't crash silently
+                    st.error(f"Audit log init failed: {e2}")
 
-        st.subheader("📝 Manual Audit Entry")
-        with st.form("manual_log"):
-            action = st.text_input("Action Type"); case_id = st.text_input("Case ID")
-            user = st.text_input("User"); details = st.text_area("Details")
-            if st.form_submit_button("Log Action"):
-                try: log_escalation_action(action, case_id, user, details); st.success("✅ Action logged.")
-                except Exception as e: st.error(f"❌ Failed to log action: {e}")
-    try: show_admin_panel()
-    except Exception as e: st.info("Admin tools not available."); st.exception(e)
 
 # Background workers
 if 'email_thread' not in st.session_state:
