@@ -131,62 +131,68 @@ def show_enhancement_dashboard():
             )
             st.altair_chart(base + labels, use_container_width=True)
 
-        d1, d2 = st.columns(2)
-        with d1: _labelled_bar(_value_counts_frame(df, "bu_code"), "bu_code", "count", "BU Distribution (labelled)")
-        with d2: _labelled_bar(_value_counts_frame(df, "region"), "region", "count", "Region Distribution (labelled)")
+        
+    # ---------------- 2×2 Distribution Snapshots ---------------- #
+    st.subheader("📦 Distribution Snapshots")
+    try:
+        import altair as alt
+        alt.data_transformers.disable_max_rows()
+        def _border(ch, height): 
+            return (ch.properties(height=height)
+                      .configure_view(stroke='#CBD5E1', strokeWidth=1)
+                      .configure_axis(grid=True, domain=True))
+        # BU distribution
+        bu_counts = (df["bu_code"].astype(str).fillna("")
+                        .replace({"nan": ""})
+                        .value_counts(dropna=False)
+                        .reset_index()
+                        .rename(columns={"index":"BU","bu_code":"Count"}))
+        # Region distribution
+        region_counts = (df["region"].astype(str).fillna("")
+                            .replace({"nan": ""})
+                            .value_counts(dropna=False)
+                            .reset_index()
+                            .rename(columns={"index":"Region","region":"Count"}))
+        # Monthly trends
+        if "timestamp" in df.columns and df["timestamp"].notna().any():
+            tdf = df.copy()
+            tdf["month"] = pd.to_datetime(tdf["timestamp"]).dt.to_period("M").dt.to_timestamp()
+            t_bu = (tdf.groupby(["month","bu_code"]).size().reset_index(name="Count"))
+            t_rg = (tdf.groupby(["month","region"]).size().reset_index(name="Count"))
+        else:
+            t_bu = pd.DataFrame({"month": [], "bu_code": [], "Count": []})
+            t_rg = pd.DataFrame({"month": [], "region": [], "Count": []})
+
+        # charts
+        bu_bar = alt.Chart(bu_counts).mark_bar().encode(
+            x=alt.X("BU:N", sort="-y"), y=alt.Y("Count:Q"), tooltip=["BU","Count"]
+        ).properties(title="BU Distribution")
+        rg_bar = alt.Chart(region_counts).mark_bar().encode(
+            x=alt.X("Region:N", sort="-y"), y=alt.Y("Count:Q"), tooltip=["Region","Count"]
+        ).properties(title="Region Distribution")
+        bu_line = alt.Chart(t_bu).mark_line(point=True).encode(
+            x=alt.X("month:T", title="Month"), y=alt.Y("Count:Q", title="Cases"),
+            color=alt.Color("bu_code:N", title="BU"), tooltip=["month:T","bu_code:N","Count:Q"]
+        ).properties(title="Monthly Trend by BU")
+        rg_line = alt.Chart(t_rg).mark_line(point=True).encode(
+            x=alt.X("month:T", title="Month"), y=alt.Y("Count:Q", title="Cases"),
+            color=alt.Color("region:N", title="Region"), tooltip=["month:T","region:N","Count:Q"]
+        ).properties(title="Monthly Trend by Region")
+
+        c1, c2 = st.columns(2)
+        with c1: st.altair_chart(_border(bu_bar, 220), use_container_width=True)
+        with c2: st.altair_chart(_border(rg_bar, 220), use_container_width=True)
+
+        c3, c4 = st.columns(2)
+        with c3: st.altair_chart(_border(bu_line, 240), use_container_width=True)
+        with c4: st.altair_chart(_border(rg_line, 240), use_container_width=True)
+
     except Exception:
         st.caption("Install Altair for charts: `pip install altair`")
         col1, col2 = st.columns(2)
-        with col1: st.dataframe(_value_counts_frame(df, "bu_code"), use_container_width=True)
-        with col2: st.dataframe(_value_counts_frame(df, "region"), use_container_width=True)
+        with col1: st.dataframe(df[['bu_code']].value_counts().reset_index(name='Count'), use_container_width=True)
+        with col2: st.dataframe(df[['region']].value_counts().reset_index(name='Count'), use_container_width=True)
 
-    # ---------------- Daily Trends ---------------- #
-    st.subheader("📈 Daily Trend")
-    if "timestamp" in df.columns and df["timestamp"].notna().any():
-        try:
-            import altair as alt
-            day = df["timestamp"].dt.date
-            trend = (
-                pd.DataFrame({"date": day})
-                .groupby("date", dropna=True)
-                .size()
-                .reset_index(name="count")
-                .sort_values("date")
-            )
-            chart = alt.Chart(trend).mark_line(point=True).encode(
-                x=alt.X("date:T", title="Date"),
-                y=alt.Y("count:Q", title="Cases"),
-                tooltip=["date:T", "count:Q"],
-            ).properties(height=280, title="Total Cases per Day")
-            st.altair_chart(chart, use_container_width=True)
-        except Exception:
-            # Fallback: plain table
-            st.dataframe(
-                pd.DataFrame({"date": df["timestamp"].dt.date})
-                .value_counts()
-                .reset_index(name="count")
-                .sort_values("date"),
-                use_container_width=True
-            )
-    else:
-        st.info("No timestamps to compute daily trend.")
-
-    # ---------------- Status Mix (Stacked by Day) ---------------- #
-    st.subheader("🧩 Status Mix by Day")
-    if {"timestamp", "status"} <= set(df.columns) and df["timestamp"].notna().any():
-        try:
-            import altair as alt
-            tmp = df.copy()
-            tmp["date"] = tmp["timestamp"].dt.date
-            mix = tmp.groupby(["date", "status"]).size().reset_index(name="count")
-            mix_chart = alt.Chart(mix).mark_bar().encode(
-                x=alt.X("date:T", title="Date"),
-                y=alt.Y("count:Q", stack="zero", title="Cases"),
-                color=alt.Color("status:N", title="Status"),
-                tooltip=["date:T", "status:N", "count:Q"],
-            ).properties(height=280, title="Stacked Status per Day")
-            st.altair_chart(mix_chart, use_container_width=True)
-        except Exception:
             st.dataframe(
                 df.assign(date=df["timestamp"].dt.date)
                   .groupby(["date", "status"]).size().reset_index(name="count")
