@@ -2,19 +2,16 @@
 # --------------------------------------------------------------------
 # EscalateAI — Customer Escalation Prediction & Management Tool
 # --------------------------------------------------------------------
-# Highlights in this build:
-# • Sidebar: MS Teams + Email notifications composer (restored)
-# • WhatsApp & SMS limited to "Resolved" cases only
-# • Top ribbon: SLA pill + AI Summary aligned with "Escalation View"
-# • Second ribbon: compact Search (no label) + filtered Total count
-# • Count strip (Total | Open | In Progress | Resolved) reflects filters
-# • BU & Region classification via bu_region_bucketizer if present
-# • BU/Region Filters (sidebar) affect counts/charts/kanban
-# • New tab: 📈 BU & Region Trends (labeled bars with color)
-# • Feedback & Retraining: 18 per page (6 rows × 3 columns) with expanders
-# • Developer section: daily email, raw DB, safe reset clears duplicates
-# • Sticky title, compact expanders, uniform labels, color-coded kanban bars
-# • Altair analytics fixed (never passes title=None)
+# This build focuses on your latest UI/analytics changes:
+# • AI summary = Total (filtered) + Likely-to-Escalate (model) in the same row
+#   with Escalation View and SLA pill
+# • Search bar kept in previous position (compact, no label)
+# • Removed the "Total" capsule under AI summary
+# • Counts strip (Total | Open | In Progress | Resolved) retained and filtered
+# • Advanced Analytics = 2×2 grid (Volume, Severity, Sentiment, Age Buckets)
+# • BU/Region charts moved to the "BU & Region Trends" page only
+# • WhatsApp/SMS restricted to Resolved, Teams/Email composers in sidebar
+# • BU/Region filters in sidebar; robust duplicate detection; dev reset clears cache
 # --------------------------------------------------------------------
 
 import os, re, time, datetime, threading, hashlib, sqlite3, smtplib, requests, imaplib, email, traceback
@@ -428,9 +425,6 @@ def _bar_with_labels(
     color_domain: list[str] | None = None,
     color_range: list[str] | None = None
 ):
-    """
-    Altair bar chart with count labels. Never passes title=None (Altair schema-safe).
-    """
     if df is None or df.empty:
         return None
     df = df.copy()
@@ -459,64 +453,70 @@ def _bar_with_labels(
         chart = chart.properties(title=str(title))
     return chart.configure_view(strokeWidth=0)
 
+def _line_with_points(df, x_field: str, y_field: str, title: str):
+    if df is None or df.empty:
+        return None
+    df = df.copy()
+    line = alt.Chart(df).mark_line().encode(
+        x=alt.X(f"{x_field}:T", title=None),
+        y=alt.Y(f"{y_field}:Q", title=None)
+    )
+    pts = alt.Chart(df).mark_point().encode(
+        x=alt.X(f"{x_field}:T", title=None),
+        y=alt.Y(f"{y_field}:Q", title=None)
+    )
+    ch = (line + pts).properties(height=220)
+    if title is not None:
+        ch = ch.properties(title=str(title))
+    return ch.configure_view(strokeWidth=0)
+
 def show_analytics_view():
+    """Advanced Analytics 2×2 grid: Volume, Severity, Sentiment, Age Buckets (no BU/Region here)."""
     df = fetch_escalations()
-    st.title("📊 Escalation Analytics")
+    st.title("📈 Advanced Analytics")
     if df.empty:
         st.warning("⚠️ No escalation data available."); return
-    df = df.copy()
-    for c in ["severity", "sentiment", "category", "region", "bu_code", "timestamp"]:
-        if c not in df.columns: df[c] = None
-    df["severity"]  = df["severity"].fillna("Unknown").astype(str).str.lower()
-    df["sentiment"] = df["sentiment"].fillna("Unknown").astype(str).str.lower()
-    df["category"]  = df["category"].fillna("Unknown").astype(str)
-    df["region"]    = df["region"].fillna("Others").astype(str)
-    df["bu_code"]   = df["bu_code"].fillna("OTHER").astype(str)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
 
-    # 1) Volume over time
-    st.subheader("📈 Escalation Volume Over Time")
+    df = df.copy()
+    df["timestamp"] = pd.to_datetime(df.get("timestamp"), errors="coerce")
+    df["severity"]  = df.get("severity",  "").astype(str).str.lower().replace({"nan":"unknown"})
+    df["sentiment"] = df.get("sentiment", "").astype(str).str.lower().replace({"nan":"unknown"})
+
+    # Volume
     vol = (df.assign(day=df["timestamp"].dt.date)
              .groupby("day", dropna=False).size()
              .reset_index(name="count"))
-    if not vol.empty:
-        st.line_chart(vol.set_index("day")["count"])
-    else:
-        st.info("No timestamped data to plot.")
-
-    # 2) Severity
-    st.subheader("🔥 Severity Distribution")
-    sev_order  = ["minor", "major", "critical", "unknown"]
-    sev_colors = ["#10b981", "#f59e0b", "#ef4444", "#9ca3af"]
+    # Severity
     sev = df.groupby("severity", dropna=False).size().reset_index(name="count")
-    sev["severity"] = sev["severity"].fillna("unknown")
-    ch = _bar_with_labels(sev, "severity", "count", "Severity (count)", 240, "severity", sev_order, sev_colors)
-    if ch is not None: st.altair_chart(ch, use_container_width=True)
-
-    # 3) Sentiment
-    st.subheader("🧠 Sentiment Breakdown")
-    sent_order  = ["negative", "neutral", "positive", "unknown"]
-    sent_colors = ["#ef4444", "#f59e0b", "#22c55e", "#9ca3af"]
+    sev_order  = ["minor","major","critical","unknown"]
+    sev_colors = ["#10b981","#f59e0b","#ef4444","#9ca3af"]
+    # Sentiment
     sen = df.groupby("sentiment", dropna=False).size().reset_index(name="count")
-    sen["sentiment"] = sen["sentiment"].fillna("unknown")
-    ch = _bar_with_labels(sen, "sentiment", "count", "Sentiment (count)", 240, "sentiment", sent_order, sent_colors)
-    if ch is not None: st.altair_chart(ch, use_container_width=True)
+    sent_order  = ["negative","neutral","positive","unknown"]
+    sent_colors = ["#ef4444","#f59e0b","#22c55e","#9ca3af"]
+    # Age Buckets
+    df["age_days"] = (pd.Timestamp.now() - df["timestamp"]).dt.days
+    df["age_bucket"] = pd.cut(df["age_days"],
+                              bins=[-1,3,7,14,30,90,9999],
+                              labels=["0–3d","4–7d","8–14d","15–30d","31–90d",">90d"])
+    age = df.groupby("age_bucket", dropna=False).size().reset_index(name="count")
 
-    # 4) Region
-    st.subheader("🗺️ Region Mix")
-    reg_order  = ["North", "East", "South", "West", "NC", "Others"]
-    reg_colors = ["#2563eb", "#d97706", "#059669", "#9333ea", "#dc2626", "#64748b"]
-    reg = df.groupby("region", dropna=False).size().reset_index(name="count")
-    ch = _bar_with_labels(reg, "region", "count", "Region (count)", 240, "region", reg_order, reg_colors)
-    if ch is not None: st.altair_chart(ch, use_container_width=True)
+    # Layout 2×2
+    r1c1, r1c2 = st.columns(2)
+    with r1c1:
+        ch = _line_with_points(vol.rename(columns={"day":"date"}), "date", "count", "Escalation Volume (daily)")
+        if ch is not None: st.altair_chart(ch, use_container_width=True)
+    with r1c2:
+        ch = _bar_with_labels(sev, "severity", "count", "Severity (count)", 240, "severity", sev_order, sev_colors)
+        if ch is not None: st.altair_chart(ch, use_container_width=True)
 
-    # 5) BU
-    st.subheader("🏷️ BU Distribution")
-    bu_order  = ["SPIBS", "PPIBS", "PSIBS", "IDIBS", "BMS", "H&D", "A2E", "Solar", "OTHER"]
-    bu_colors = ["#2563eb", "#16a34a", "#f59e0b", "#9333ea", "#06b6d4", "#f97316", "#a855f7", "#22c55e", "#94a3b8"]
-    bu = df.groupby("bu_code", dropna=False).size().reset_index(name="count")
-    ch = _bar_with_labels(bu, "bu_code", "count", "BU (count)", 240, "bu_code", bu_order, bu_colors)
-    if ch is not None: st.altair_chart(ch, use_container_width=True)
+    r2c1, r2c2 = st.columns(2)
+    with r2c1:
+        ch = _bar_with_labels(sen, "sentiment", "count", "Sentiment (count)", 240, "sentiment", sent_order, sent_colors)
+        if ch is not None: st.altair_chart(ch, use_container_width=True)
+    with r2c2:
+        ch = _bar_with_labels(age, "age_bucket", "count", "Age Buckets (count)", 240)
+        if ch is not None: st.altair_chart(ch, use_container_width=True)
 
 # ---------------- Streamlit UI ----------------
 st.set_page_config(page_title="Escalation Management", layout="wide")
@@ -548,7 +548,6 @@ st.markdown("""
   .aisum{background:#0b1220;color:#e5f2ff;padding:10px 12px;border-radius:10px;
          box-shadow:0 6px 14px rgba(0,0,0,.10);font-size:13px;}
   .sla-pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#ef4444;color:#fff;font-weight:600;font-size:12px;}
-  .total-pill{display:inline-block;padding:4px 10px;border-radius:8px;background:#111827;color:#fff;font-weight:700;font-size:12px;}
 
   .kpi-panel{margin-top:0 !important;background:transparent !important;border:0 !important;box-shadow:none !important;padding:0 !important;}
   .kpi-gap{height:22px !important;}
@@ -608,7 +607,6 @@ if uploaded:
             if not issue: continue
             text = summarize_issue_text(issue)
             s,u,sev,c,cat,esc = analyze_issue(text); likely = predict_escalation(m,s,u,sev,c)
-            # region guess if you also include Country/State/City columns in uploaded sheet
             region_guess = "Others"
             created, _, _ = add_or_skip_escalation(cust, text, s,u,sev,c,cat,esc, likely, region=region_guess)
             ok += int(created); dups += int(not created)
@@ -654,8 +652,7 @@ if not df_resolved_only.empty:
     with c1:
         if st.button("Send WhatsApp"):
             try:
-                # Place your send_whatsapp_message(phone, msg2) here if available
-                ok = False
+                ok = False  # plug your WhatsApp sender here
                 st.sidebar.success(f"✅ WhatsApp sent to {phone}") if ok else st.sidebar.error("❌ WhatsApp API not configured")
             except Exception as e:
                 st.sidebar.error(f"❌ WhatsApp send failed: {e}")
@@ -758,6 +755,21 @@ if page == "📊 Main Dashboard":
         # Apply sidebar filters first
         filt = apply_filters(df_all)
 
+        # Precompute model-based "likely" on the filtered pool for AI Summary
+        model_for_view = train_model()
+        if not filt.empty:
+            def _pred_row_summary(r):
+                return predict_escalation(
+                    model_for_view,
+                    (str(r.get("sentiment") or "neutral")).lower(),
+                    (str(r.get("urgency") or "normal")).lower(),
+                    (str(r.get("severity") or "minor")).lower(),
+                    (str(r.get("criticality") or "medium")).lower(),
+                )
+            likely_count = filt.apply(_pred_row_summary, axis=1).eq("Yes").sum()
+        else:
+            likely_count = 0
+
         # Top ribbon: Escalation View + SLA pill + AI Summary (same row)
         top_a1, top_a2, top_a3 = st.columns([0.50, 0.15, 0.35])
         with top_a1:
@@ -772,21 +784,19 @@ if page == "📊 Main Dashboard":
             ]
             st.markdown(f"<span class='sla-pill'>⏱️ {len(sla_breaches)} SLA breach(s)</span>", unsafe_allow_html=True)
         with top_a3:
-            ai_text = f"Showing {len(filt)} filtered case(s)."
+            ai_text = f"Total (filtered): <b>{len(filt)}</b> &nbsp;|&nbsp; Likely to Escalate: <b>{likely_count}</b>"
             st.markdown(f"<div class='aisum'><b>🧠 AI Summary</b><br>{ai_text}</div>", unsafe_allow_html=True)
 
-        # Second ribbon: Search (no label) + Total count (filtered)
-        top_b1, top_b2 = st.columns([0.70, 0.30])
+        # Second ribbon: Search bar ONLY (same position as before; compact)
+        top_b1, _ = st.columns([0.70, 0.30])
         with top_b1:
             q = st.text_input("", key="search_cases", placeholder="Search cases (ID, customer, issue, owner, email, status, BU, region…)", label_visibility="collapsed")
-        with top_b2:
-            st.markdown(f"<div style='text-align:right;'><span class='total-pill'>Total: {len(filt)}</span></div>", unsafe_allow_html=True)
 
         # Apply search
         view = filter_df_by_query(filt.copy(), q)
         view["status"] = view.get("status", pd.Series(dtype=str)).astype(str).str.strip().str.title()
 
-        # KPI counts strip (reflecting filters+search)
+        # KPI counts strip (reflecting filters+search) — SAME as before
         counts = view['status'].value_counts() if not view.empty else pd.Series(dtype=int)
         total = len(view)
         open_c = int(counts.get("Open",0)); prog_c = int(counts.get("In Progress",0)); res_c = int(counts.get("Resolved",0))
@@ -796,8 +806,7 @@ if page == "📊 Main Dashboard":
         k3.metric("In Progress", prog_c)
         k4.metric("Resolved", res_c)
 
-        # Escalation view filtering
-        model_for_view = train_model()
+        # Escalation view refinement
         if view_radio == "SLA Breach":
             _y = view.copy()
             _y['timestamp'] = pd.to_datetime(_y['timestamp'], errors='coerce')
@@ -819,7 +828,7 @@ if page == "📊 Main Dashboard":
             view["likely_calc"] = view.apply(_pred_row, axis=1)
             view = view[view["likely_calc"]=="Yes"] if view_radio=="Likely to Escalate" else view[view["likely_calc"]!="Yes"]
 
-        # Kanban columns with headers & counts
+        # Kanban columns
         c1, c2, c3 = st.columns(3)
         cols = {"Open": c1, "In Progress": c2, "Resolved": c3}
         counts = view['status'].value_counts() if not view.empty else pd.Series(dtype=int)
@@ -956,7 +965,6 @@ if page == "📊 Main Dashboard":
         if d.empty:
             st.info("No cases available.")
         else:
-            # paginate 18 per page, grid 6x3
             d = d.sort_values(by="timestamp", ascending=False)
             per_page = 18
             total_pages = max(1, int(np.ceil(len(d)/per_page)))
@@ -1000,43 +1008,44 @@ if page == "📊 Main Dashboard":
             ).properties(height=220, title="Cases by Status")
             labels = alt.Chart(status_df).mark_text(dy=-6, color="#111827").encode(x="Status:N", y="Count:Q", text="Count:Q")
             st.altair_chart((ch+labels), use_container_width=True)
+
+        # Also show the same 2×2 grid here for quick glance (no BU/Region)
         try:
             show_analytics_view()
         except Exception as e:
             st.error(f"❌ Failed to load analytics view: {e}")
 
     # ---------------- Tab 4: How it Works / User Guide ----------------
-        # (kept inside Main tab group as requested)
     with tabs[4]:
         st.subheader("ℹ️ How this Dashboard Works")
         st.markdown("""
 **At a glance**
-- **Sticky header** keeps the title visible.
-- **Sidebar filters** (Status/Severity/Sentiment/Category/BU/Region) narrow all tabs.
-- **Escalation View** toggles between **All**, **Likely**, **Not Likely**, and **SLA Breach**.
+- **Sidebar filters** (Status/Severity/Sentiment/Category/BU/Region) narrow *all* tabs.
+- **Escalation View** toggles All / Likely / Not Likely / SLA Breach.
 - **SLA pill** shows unresolved, high-priority cases older than 10 minutes.
-- **Search** matches across ID, customer, issue, owner, email, status, BU, region.
-- **Counts** (Total/Open/In Progress/Resolved) reflect filters and search.
-- **Kanban** has orange (Open), blue (In Progress), green (Resolved) headers with counts.
+- **Search** is compact and searches across ID, customer, issue, owner, email, status, BU, region.
+- **Counts strip** (Total/Open/In Progress/Resolved) always reflects filters + search.
+- **Kanban** headers are color-coded: orange (Open), blue (In Progress), green (Resolved).
 
-**Inside each card**
-1) **Summary** and an **Age** chip  
-2) **KPIs (2 rows):** Severity, Urgency, Criticality, Category, Sentiment, Likely  
+**Inside each case**
+1) **Summary** + **Age** chip  
+2) **KPI rows:** Severity, Urgency, Criticality, Category, Sentiment, Likely  
 3) **Controls:**  
    - Row A: **Status** + **Action Taken**  
    - Row B: **Owner** + **Owner Email**  
    - Row C: **Save** + **N+1 Email** + **Escalate to N+1**
 
 **Notifications**
-- Compose **MS Teams** and **Email** messages from the sidebar.  
-- **WhatsApp/SMS** are available for **Resolved** cases only.
+- Send **MS Teams** and **Email** from the sidebar.  
+- **WhatsApp/SMS** available for **Resolved** only.
 
 **Duplicates**
-- Normalized hashing + TF-IDF (fallback to difflib) to skip duplicates.  
-- **Reset Database** clears tables *and* the in-memory duplicate cache.
+- Normalization + TF-IDF (fallback difflib) to prevent re-inserts.  
+- **Reset Database** clears tables and the in-memory duplicate cache.
 
-**BU/Region**
-- If `bu_region_bucketizer.py` is present, issues auto-tag with **BU** (SPIBS, PPIBS, PSIBS, IDIBS, …) and **Region** (North/East/South/West/NC/Others).
+**Analytics**
+- **Advanced Analytics** shows a 2×2 grid of Volume, Severity, Sentiment, and Age Buckets.  
+- **BU & Region Trends** dedicates charts for BU and Region distributions.
         """)
 
 elif page == "📈 Advanced Analytics":
@@ -1051,26 +1060,24 @@ elif page == "📈 BU & Region Trends":
     if df.empty:
         st.info("No data yet.")
     else:
-        # BU trend
+        # BU distribution
         st.markdown("**🏷️ BU Distribution**")
         bu_order  = ["SPIBS","PPIBS","PSIBS","IDIBS","BMS","H&D","A2E","Solar","OTHER"]
         bu_colors = ["#2563eb","#16a34a","#f59e0b","#9333ea","#06b6d4","#f97316","#a855f7","#22c55e","#94a3b8"]
         bu = df.get("bu_code", pd.Series(dtype=str)).astype(str)
         bu_ct = bu.value_counts().reindex(bu_order, fill_value=0)
-        bu_df = pd.DataFrame({"BU": bu_ct.index, "Count": bu_ct.values})
-        ch = _bar_with_labels(bu_df.rename(columns={"BU":"bu_code","Count":"count"}),
-                              "bu_code","count","BU (count)",240,"bu_code",bu_order,bu_colors)
+        bu_df = pd.DataFrame({"bu_code": bu_ct.index, "count": bu_ct.values})
+        ch = _bar_with_labels(bu_df, "bu_code","count","BU (count)",240,"bu_code",bu_order,bu_colors)
         if ch is not None: st.altair_chart(ch, use_container_width=True)
 
-        # Region trend
+        # Region distribution
         st.markdown("**🗺️ Region Distribution**")
         reg_order  = ["North","East","South","West","NC","Others"]
         reg_colors = ["#2563eb","#d97706","#059669","#9333ea","#dc2626","#64748b"]
         reg = df.get("region", pd.Series(dtype=str)).astype(str)
         reg_ct = reg.value_counts().reindex(reg_order, fill_value=0)
-        reg_df = pd.DataFrame({"Region": reg_ct.index, "Count": reg_ct.values})
-        ch = _bar_with_labels(reg_df.rename(columns={"Region":"region","Count":"count"}),
-                              "region","count","Region (count)",240,"region",reg_order,reg_colors)
+        reg_df = pd.DataFrame({"region": reg_ct.index, "count": reg_ct.values})
+        ch = _bar_with_labels(reg_df, "region","count","Region (count)",240,"region",reg_order,reg_colors)
         if ch is not None: st.altair_chart(ch, use_container_width=True)
 
 elif page == "🔥 SLA Heatmap":
@@ -1101,7 +1108,7 @@ EscalateAI predicts and manages customer escalations from email uploads or Excel
 - **Filters**: Status, Severity, Sentiment, Category, BU, Region  
 - **AI Likelihood** and **SLA Breach** view  
 - **Feedback & Retraining** grid (18 per page)  
-- **Analytics** (severity, sentiment, BU, region) with labeled bars  
+- **Analytics** (2×2 grid) + **BU/Region Trends**  
 - **Notifications**: Teams, Email (any); WhatsApp/SMS (Resolved only)  
 - **Dev tools**: daily email, DB viewer, safe reset
 
