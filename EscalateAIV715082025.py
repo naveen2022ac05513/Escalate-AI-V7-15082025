@@ -33,22 +33,6 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
-# Enhancement dashboard import (robust)
-try:
-    from enhancement_dashboard import show_enhancement_dashboard
-except Exception:
-    import importlib.util, os
-    _here = os.path.dirname(os.path.abspath(__file__))
-    _ed_path = os.path.join(_here, "enhancement_dashboard.py")
-    if os.path.exists(_ed_path):
-        _spec = importlib.util.spec_from_file_location("enhancement_dashboard", _ed_path)
-        _mod = importlib.util.module_from_spec(_spec)
-        _spec.loader.exec_module(_mod)  # type: ignore
-        show_enhancement_dashboard = getattr(_mod, "show_enhancement_dashboard")
-    else:
-        def show_enhancement_dashboard():
-            st.info("Enhancement dashboard not available.")
-
 # Optional TF-IDF for duplicate detection
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -631,12 +615,6 @@ ensure_schema()
 
 try: validate_escalation_schema()
 except Exception: pass
-
-# after ensure_schema() and validate_escalation_schema()
-try:
-    ensure_audit_log_table()
-except Exception as e:
-    st.warning(f"Audit log table check failed: {e}")
 
 # Styles (glass expander, compact totals, controls alignment)
 st.markdown("""
@@ -1252,20 +1230,15 @@ elif page == "📈 BU & Region Trends":
 
 elif page == "🔥 SLA Heatmap":
     st.subheader("🔥 SLA Heatmap")
-    try:
-    # Primary: by category. Change to "severity" if you prefer.
-        render_sla_heatmap(escalations_df, index_col="category")
-    except Exception as e:
-        st.error(f"❌ SLA Heatmap failed to render: {type(e).__name__}: {e}")
-
+    try: render_sla_heatmap()
+    except Exception as e: st.error(f"❌ SLA Heatmap failed: {type(e).__name__}: {str(e)}")
 
 elif page == "🧠 Enhancements":
     # Safe guard — if enhancement dashboard imports but fails internally, we still keep app alive
     try:
         show_enhancement_dashboard()
     except Exception as e:
-        st.error(f"Enhancement dashboard failed: {type(e).__name__}: {e}")
-
+        st.warning(f"Enhancement dashboard not available. ({type(e).__name__}: {e})")
 
 elif page == "📘 User Guide":
     st.title("📘 EscalateAI — User Guide")
