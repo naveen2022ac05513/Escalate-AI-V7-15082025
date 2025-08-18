@@ -1246,8 +1246,12 @@ elif page == "📈 BU & Region Trends":
 
 elif page == "🔥 SLA Heatmap":
     st.subheader("🔥 SLA Heatmap")
-    try: render_sla_heatmap()
-    except Exception as e: st.error(f"❌ SLA Heatmap failed: {type(e).__name__}: {str(e)}")
+    try:
+    # Primary: by category. Change to "severity" if you prefer.
+        render_sla_heatmap(escalations_df, index_col="category")
+    except Exception as e:
+        st.error(f"❌ SLA Heatmap failed to render: {type(e).__name__}: {e}")
+
 
 elif page == "🧠 Enhancements":
     # Safe guard — if enhancement dashboard imports but fails internally, we still keep app alive
