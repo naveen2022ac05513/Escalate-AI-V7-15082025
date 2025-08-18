@@ -86,16 +86,103 @@ def generate_pdf_report():
     except Exception as e:
         print(f"❌ PDF generation failed: {e}")
 
-# 🔥 SLA Heatmap Visualization
-def render_sla_heatmap():
-    df = fetch_escalations()
-    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-    df['hour'] = df['timestamp'].dt.hour
-    heatmap_data = df.pivot_table(index='category', columns='hour', values='id', aggfunc='count').fillna(0)
-    st.subheader("🔥 SLA Breach Heatmap")
-    fig, ax = plt.subplots()
-    sns.heatmap(heatmap_data, ax=ax, cmap="Reds")
-    st.pyplot(fig)
+# ---------------- SLA Heatmap (Age Buckets) ---------------- #
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import streamlit as st
+
+def render_sla_heatmap(df: pd.DataFrame, index_col: str | None = None) -> None:
+    """
+    SLA heatmap showing counts of open/in-progress cases by age bucket.
+    - Buckets: ≤ 4h, 4–12h, > 12h
+    - Index: category (fallback: severity -> business_unit -> owner)
+    """
+    if df is None or df.empty:
+        st.info("No data for SLA heatmap.")
+        return
+
+    # Keep only Open & In Progress (you can add other statuses if you want)
+    status_col = "status" if "status" in df.columns else None
+    dff = df.copy()
+    if status_col:
+        dff = dff[dff[status_col].astype(str).isin(["Open", "In Progress"])]
+
+    # Ensure timestamp present
+    if "timestamp" not in dff.columns:
+        st.info("Missing 'timestamp' column for SLA heatmap.")
+        return
+
+    # Compute age_hours safely (use closed_at if present to stop the clock for closed items)
+    now = pd.Timestamp.now(tz=None)
+    dff["timestamp"] = pd.to_datetime(dff["timestamp"], errors="coerce")
+    if "closed_at" in dff.columns:
+        dff["closed_at"] = pd.to_datetime(dff["closed_at"], errors="coerce")
+        end_time = dff["closed_at"].where(dff["closed_at"].notna(), other=now)
+    else:
+        end_time = pd.Series(now, index=dff.index)
+
+    dff["age_hours"] = (end_time - dff["timestamp"]).dt.total_seconds() / 3600.0
+
+    # Age buckets
+    bins = [-np.inf, 4, 12, np.inf]
+    labels = ["≤ 4h", "4–12h", "> 12h"]
+    dff["age_bucket"] = pd.cut(dff["age_hours"], bins=bins, labels=labels, right=True)
+
+    # Choose index (row) column
+    if index_col is None:
+        for candidate in ["category", "severity", "business_unit", "owner"]:
+            if candidate in dff.columns:
+                index_col = candidate
+                break
+    if index_col is None:
+        st.info("No suitable dimension found for rows (tried category, severity, business_unit, owner).")
+        return
+
+    # Build pivot: rows = index_col, columns = age_bucket
+    pivot = pd.pivot_table(
+        dff,
+        index=index_col,
+        columns="age_bucket",
+        values="id" if "id" in dff.columns else dff.columns[0],
+        aggfunc="count",
+        fill_value=0,
+    )
+
+    # Ensure columns order
+    pivot = pivot.reindex(columns=labels, fill_value=0)
+
+    if pivot.empty:
+        st.info("No data after filtering to Open/In Progress.")
+        return
+
+    # Plot with matplotlib
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    im = ax.imshow(pivot.values, aspect="auto")  # default colormap works fine
+
+    # Axis ticks/labels
+    ax.set_xticks(range(pivot.shape[1]))
+    ax.set_xticklabels(pivot.columns)
+    ax.set_yticks(range(pivot.shape[0]))
+    ax.set_yticklabels(pivot.index)
+
+    ax.set_xlabel("Age bucket")
+    ax.set_ylabel(index_col.replace("_", " ").title())
+    ax.set_title("SLA Heatmap (Open & In Progress)")
+
+    # Annotate counts in each cell
+    vals = pivot.values
+    for i in range(vals.shape[0]):
+        for j in range(vals.shape[1]):
+            ax.text(
+                j, i, str(int(vals[i, j])),
+                ha="center", va="center",
+                color="white" if vals[i, j] > 0 else "black",
+                fontsize=9,
+            )
+
+    fig.tight_layout()
+    st.pyplot(fig, clear_figure=True)
 
 # 🌙 Dark Mode Toggle
 def apply_dark_mode():
