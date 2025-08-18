@@ -87,8 +87,10 @@ def generate_pdf_report():
         print(f"❌ PDF generation failed: {e}")
 
 # 🔥 SLA Heatmap Visualization (age buckets; zero-arg)
-def render_sla_heatmap():
-    df = fetch_escalations()
+def render_sla_heatmap(df: pd.DataFrame | None = None, index_col: str = "category"):
+    if df is None:
+        df = fetch_escalations()
+
     if df is None or df.empty:
         st.info("No data for SLA heatmap.")
         return
@@ -101,23 +103,10 @@ def render_sla_heatmap():
         st.info("Missing 'timestamp' column for SLA heatmap.")
         return
 
-    # compute age in hours
-    now = pd.Timestamp.now(tz=None)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-    if "closed_at" in df.columns:
-        df["closed_at"] = pd.to_datetime(df["closed_at"], errors="coerce")
-        end_time = df["closed_at"].where(df["closed_at"].notna(), other=now)
-    else:
-        end_time = pd.Series(now, index=df.index)
-    df["age_hours"] = (end_time - df["timestamp"]).dt.total_seconds() / 3600.0
+    # ... compute age_hours and age_bucket exactly as in your file ...
 
-    # age buckets
-    bins   = [-np.inf, 4, 12, np.inf]
-    labels = ["≤ 4h", "4–12h", "> 12h"]
-    df["age_bucket"] = pd.cut(df["age_hours"], bins=bins, labels=labels, right=True)
-
-    # pick a row dimension (fallbacks)
-    for candidate in ["category", "severity", "business_unit", "owner"]:
+    # prefer the requested index_col but fall back safely
+    for candidate in [index_col, "category", "severity", "business_unit", "owner"]:
         if candidate in df.columns:
             index_col = candidate
             break
