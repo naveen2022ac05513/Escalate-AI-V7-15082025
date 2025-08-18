@@ -1,5 +1,5 @@
 # advanced_enhancements.py
-# Utilities for analytics, SHAP, PDF generation, duplicate detection, and a robust audit log.
+# Utilities: robust audit log, schema validation, SHAP, PDF, duplicates, WhatsApp.
 
 import os
 import re
@@ -16,7 +16,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import classification_report
 import importlib.util
 
-# Optional deps (guarded)
+# Optional deps
 try:
     import shap
 except Exception:
@@ -33,7 +33,7 @@ except Exception:
     pisa = None
 
 # -----------------------------------------------------------------------------
-# Configuration
+# Configuration / DB
 # -----------------------------------------------------------------------------
 DB_PATH = os.getenv("ESCALATEAI_DB_PATH", "escalations.db")
 
@@ -41,17 +41,210 @@ def _get_conn():
     return sqlite3.connect(DB_PATH)
 
 # -----------------------------------------------------------------------------
-# ETA Prediction (simple baseline)
+# === Escalations schema validation ===
+# Returns (ok: bool, msg: str)
+# Ensures a few columns exist; adds them as TEXT if missing.
+# -----------------------------------------------------------------------------
+def validate_escalation_schema():
+    required_columns = ["owner_email", "status_update_date", "user_feedback", "likely_to_escalate"]
+    try:
+        conn = _get_conn()
+        cur = conn.cursor()
+        # Ensure table exists; if the app already creates it elsewhere, this is harmless.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS escalations (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                timestamp TEXT,
+                customer_email TEXT,
+                subject TEXT,
+                issue TEXT,
+                sentiment TEXT,
+                urgency TEXT,
+                escalation_flag TEXT,
+                severity TEXT,
+                criticality TEXT,
+                category TEXT,
+                status TEXT,
+                action_taken TEXT,
+                owner TEXT,
+                owner_email TEXT,
+                status_update_date TEXT,
+                user_feedback TEXT,
+                likely_to_escalate TEXT
+            )
+        """)
+        # Add missing columns, all as TEXT for compatibility
+        for col in required_columns:
+            try:
+                cur.execute(f"SELECT {col} FROM escalations LIMIT 1")
+            except sqlite3.OperationalError:
+                cur.execute(f"ALTER TABLE escalations ADD COLUMN {col} TEXT")
+        conn.commit()
+        return True, "Escalations schema OK"
+    except Exception as e:
+        return False, f"Escalations schema error: {e}"
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+# -----------------------------------------------------------------------------
+# === Audit Log (robust, schema-safe) ===
+# Canonical schema: 5 TEXT columns (timestamp, action_type, case_id, user, details)
+# -----------------------------------------------------------------------------
+_AUDIT_TABLE = "audit_log"
+_AUDIT_CANON_COLS = ["timestamp", "action_type", "case_id", "user", "details"]
+
+def _audit_table_info(cur):
+    cur.execute(f"PRAGMA table_info({_AUDIT_TABLE})")
+    # returns list of tuples: (cid, name, type, notnull, dflt_value, pk)
+    return [(r[1], (r[2] or "").upper()) for r in cur.fetchall()]
+
+def _audit_create(cur):
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS {_AUDIT_TABLE} (
+            timestamp   TEXT NOT NULL,
+            action_type TEXT NOT NULL,
+            case_id     TEXT,
+            user        TEXT,
+            details     TEXT
+        )
+    """)
+    cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{_AUDIT_TABLE}_ts ON {_AUDIT_TABLE}(timestamp)")
+
+def _audit_is_canonical(info):
+    names = [n for n, _t in info]
+    if set(names) != set(_AUDIT_CANON_COLS):
+        return False
+    # Optional: check types are TEXT-ish (SQLite is flexible, but avoid STRICT tables)
+    for n, t in info:
+        if n in _AUDIT_CANON_COLS and "TEXT" not in t and t not in ("", None):
+            return False
+    return True
+
+def _audit_migrate_if_needed(cur):
+    info = _audit_table_info(cur)
+    if not info:
+        _audit_create(cur)
+        return
+
+    if _audit_is_canonical(info):
+        # Ensure index exists
+        cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{_AUDIT_TABLE}_ts ON {_AUDIT_TABLE}(timestamp)")
+        return
+
+    # Migrate: rename old, create canonical, copy intersection
+    cur.execute(f"ALTER TABLE {_AUDIT_TABLE} RENAME TO {_AUDIT_TABLE}_old")
+    _audit_create(cur)
+
+    old_cols = [n for n, _t in info]
+    intersection = [c for c in _AUDIT_CANON_COLS if c in old_cols]
+    if intersection:
+        cols_csv = ", ".join(intersection)
+        cur.execute(f"""
+            INSERT INTO {_AUDIT_TABLE} ({cols_csv})
+            SELECT {cols_csv} FROM {_AUDIT_TABLE}_old
+        """)
+    cur.execute(f"DROP TABLE IF EXISTS {_AUDIT_TABLE}_old")
+
+def ensure_audit_log_table():
+    """
+    Create or heal the audit_log table to canonical schema.
+    Returns (ok: bool, msg: str)
+    """
+    try:
+        conn = _get_conn()
+        cur = conn.cursor()
+        _audit_create(cur)
+        _audit_migrate_if_needed(cur)
+        conn.commit()
+        return True, "Audit log schema OK"
+    except Exception as e:
+        return False, f"Audit log schema error: {e}"
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+def log_escalation_action(action_type: str, case_id: str, user: str, details: str):
+    """
+    Append a row to audit_log using explicit columns (order-safe, type-safe).
+    Also self-heals the table before writing.
+    """
+    ok, msg = ensure_audit_log_table()
+    if not ok:
+        # Surface a readable error in UI but don't crash the whole app.
+        st.warning(f"⚠️ {msg}")
+        return
+
+    ts = datetime.datetime.now().isoformat(timespec="seconds")
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"""INSERT INTO {_AUDIT_TABLE}
+                (timestamp, action_type, case_id, user, details)
+                VALUES (?, ?, ?, ?, ?)""",
+            (ts, str(action_type or ""), str(case_id or ""), str(user or ""), str(details or ""))
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+def fetch_audit_log_preview(limit: int = 100) -> pd.DataFrame:
+    """
+    Return recent audit entries for preview.
+    """
+    try:
+        conn = _get_conn()
+        df = pd.read_sql(
+            f"SELECT timestamp, action_type, case_id, user, details "
+            f"FROM {_AUDIT_TABLE} ORDER BY timestamp DESC LIMIT ?",
+            conn,
+            params=(int(limit),)
+        )
+        return df
+    except Exception:
+        return pd.DataFrame()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+# -----------------------------------------------------------------------------
+# One-shot hard repair (call from admin if needed)
+# -----------------------------------------------------------------------------
+def drop_and_recreate_audit_log():
+    """
+    Force-drop and recreate a clean audit_log (use if migrations failed).
+    """
+    conn = _get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"DROP TABLE IF EXISTS {_AUDIT_TABLE}")
+        _audit_create(cur)
+        conn.commit()
+        return True, "audit_log dropped & recreated"
+    except Exception as e:
+        return False, f"drop_and_recreate_audit_log error: {e}"
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+# -----------------------------------------------------------------------------
+# ETA Prediction (simple baseline from resolved cases)
 # -----------------------------------------------------------------------------
 def predict_resolution_eta(df: pd.DataFrame):
-    if df is None or df.empty:
+    if df is None or df.empty or "status" not in df.columns:
         return lambda _case: np.nan
 
-    data = df.copy()
-    if "status" not in data.columns:
-        return lambda _case: np.nan
-
-    data = data[data["status"] == "Resolved"].copy()
+    data = df[df["status"] == "Resolved"].copy()
     if data.empty:
         return lambda _case: np.nan
 
@@ -63,6 +256,7 @@ def predict_resolution_eta(df: pd.DataFrame):
         pd.to_datetime(data["status_update_date"], errors="coerce")
         - pd.to_datetime(data["timestamp"], errors="coerce")
     ).dt.total_seconds() / 3600.0
+
     data = data.replace([np.inf, -np.inf], np.nan).dropna(subset=["duration_hours"])
     if data.empty:
         return lambda _case: np.nan
@@ -91,7 +285,7 @@ def predict_resolution_eta(df: pd.DataFrame):
     return predict
 
 # -----------------------------------------------------------------------------
-# SHAP Explanation
+# SHAP helpers
 # -----------------------------------------------------------------------------
 def show_shap_explanation(model, case_features: dict):
     if shap is None:
@@ -140,16 +334,19 @@ def generate_shap_plot(model=None, X_sample: pd.DataFrame = None):
         st.error(f"SHAP plot generation failed: {e}")
 
 # -----------------------------------------------------------------------------
-# PDF Generators
+# PDF helpers
 # -----------------------------------------------------------------------------
 def fetch_escalations() -> pd.DataFrame:
-    conn = _get_conn()
     try:
+        conn = _get_conn()
         return pd.read_sql("SELECT * FROM escalations", conn)
     except Exception:
         return pd.DataFrame()
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def generate_pdf_report(output_path: str = "report.pdf"):
     if pisa is None:
@@ -159,7 +356,6 @@ def generate_pdf_report(output_path: str = "report.pdf"):
     if df is None or df.empty:
         st.info("No data to include in the report.")
         return
-
     html = f"""
     <html>
     <head>
@@ -208,7 +404,7 @@ def generate_text_pdf(df: pd.DataFrame, output_path: str = "summary_report.pdf")
         st.error(f"❌ PDF summary failed: {e}")
 
 # -----------------------------------------------------------------------------
-# Model Metrics
+# Model metrics
 # -----------------------------------------------------------------------------
 def render_model_metrics(model, X_test: pd.DataFrame, y_test: pd.Series):
     if X_test is None or y_test is None or len(X_test) == 0 or len(y_test) == 0:
@@ -223,7 +419,7 @@ def render_model_metrics(model, X_test: pd.DataFrame, y_test: pd.Series):
         st.error(f"Metrics rendering failed: {e}")
 
 # -----------------------------------------------------------------------------
-# Feedback Scoring
+# Feedback scoring
 # -----------------------------------------------------------------------------
 def score_feedback_quality(notes: str) -> float:
     if not notes:
@@ -232,102 +428,7 @@ def score_feedback_quality(notes: str) -> float:
     return float(min(score, 1.0))
 
 # -----------------------------------------------------------------------------
-# Escalations table schema validator/additions
-# -----------------------------------------------------------------------------
-def validate_escalation_schema():
-    required_columns = ["owner_email", "status_update_date", "user_feedback", "likely_to_escalate"]
-    conn = _get_conn()
-    try:
-        cur = conn.cursor()
-        for col in required_columns:
-            try:
-                cur.execute(f"SELECT {col} FROM escalations LIMIT 1")
-            except sqlite3.OperationalError:
-                cur.execute(f"ALTER TABLE escalations ADD COLUMN {col} TEXT")
-        conn.commit()
-    finally:
-        conn.close()
-
-# -----------------------------------------------------------------------------
-# Robust Audit Logger (schema-safe + auto-migration)
-# -----------------------------------------------------------------------------
-_AUDIT_TABLE = "audit_log"
-_AUDIT_CANON_COLS = ["timestamp", "action_type", "case_id", "user", "details"]  # all TEXT
-
-def _audit_table_info(cur) -> list:
-    cur.execute(f"PRAGMA table_info({_AUDIT_TABLE})")
-    return [(r[1], r[2]) for r in cur.fetchall()]
-
-def _audit_create(cur):
-    cur.execute(f"""
-        CREATE TABLE IF NOT EXISTS {_AUDIT_TABLE} (
-            timestamp   TEXT NOT NULL,
-            action_type TEXT NOT NULL,
-            case_id     TEXT,
-            user        TEXT,
-            details     TEXT
-        )
-    """)
-    cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{_AUDIT_TABLE}_ts ON {_AUDIT_TABLE}(timestamp)")
-
-def _audit_migrate_if_needed(cur):
-    info = _audit_table_info(cur)
-    if not info:
-        _audit_create(cur)
-        return
-
-    existing_cols = [c for c, _t in info]
-
-    # If table already matches canonical 5 TEXT columns, just ensure index and return
-    if all(c in existing_cols for c in _AUDIT_CANON_COLS) and len(existing_cols) == len(_AUDIT_CANON_COLS):
-        _audit_create(cur)  # ensures index
-        return
-
-    # Otherwise rename & recreate to canonical schema, then copy intersecting cols
-    cur.execute(f"ALTER TABLE {_AUDIT_TABLE} RENAME TO {_AUDIT_TABLE}_old")
-    _audit_create(cur)
-
-    intersection = [c for c in _AUDIT_CANON_COLS if c in existing_cols]
-    if intersection:
-        cols_csv = ", ".join(intersection)
-        cur.execute(f"""
-            INSERT INTO {_AUDIT_TABLE} ({cols_csv})
-            SELECT {cols_csv} FROM {_AUDIT_TABLE}_old
-        """)
-    cur.execute(f"DROP TABLE IF EXISTS {_AUDIT_TABLE}_old")
-
-def ensure_audit_log_table():
-    conn = _get_conn()
-    try:
-        cur = conn.cursor()
-        _audit_create(cur)
-        _audit_migrate_if_needed(cur)
-        conn.commit()
-    finally:
-        conn.close()
-
-def log_escalation_action(action_type: str, case_id: str, user: str, details: str):
-    """
-    Append a row to the audit log using explicit columns (order-safe, type-safe).
-    This also self-heals the audit_log schema before writing.
-    """
-    ensure_audit_log_table()
-    ts = datetime.datetime.now().isoformat(timespec="seconds")
-    conn = _get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"""INSERT INTO {_AUDIT_TABLE}
-                (timestamp, action_type, case_id, user, details)
-                VALUES (?, ?, ?, ?, ?)""",
-            (ts, str(action_type or ""), str(case_id or ""), str(user or ""), str(details or ""))
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-# -----------------------------------------------------------------------------
-# Duplicate Detection
+# Duplicate detection
 # -----------------------------------------------------------------------------
 def detect_cosine_duplicates(df: pd.DataFrame, threshold: float = 0.85):
     if df is None or df.empty or "issue" not in df.columns:
@@ -340,7 +441,6 @@ def detect_cosine_duplicates(df: pd.DataFrame, threshold: float = 0.85):
         sim = cosine_similarity(vectors)
     except Exception:
         return []
-
     duplicates = []
     n = len(issues)
     for i in range(n):
@@ -353,7 +453,7 @@ def detect_cosine_duplicates(df: pd.DataFrame, threshold: float = 0.85):
     return duplicates
 
 # -----------------------------------------------------------------------------
-# Email Thread Grouping (heuristic)
+# Email thread grouping
 # -----------------------------------------------------------------------------
 def link_email_threads(df: pd.DataFrame):
     if df is None or df.empty:
@@ -373,7 +473,7 @@ def link_email_threads(df: pd.DataFrame):
     return df.groupby("thread_id")
 
 # -----------------------------------------------------------------------------
-# Lightweight Plugin Loader
+# Plugin loader
 # -----------------------------------------------------------------------------
 def load_custom_plugins(path: str = "plugins/"):
     if not os.path.isdir(path):
