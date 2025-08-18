@@ -632,6 +632,12 @@ ensure_schema()
 try: validate_escalation_schema()
 except Exception: pass
 
+# after ensure_schema() and validate_escalation_schema()
+try:
+    ensure_audit_log_table()
+except Exception as e:
+    st.warning(f"Audit log table check failed: {e}")
+
 # Styles (glass expander, compact totals, controls alignment)
 st.markdown("""
 <style>
