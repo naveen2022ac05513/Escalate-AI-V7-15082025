@@ -690,7 +690,7 @@ st.markdown("""
 st.sidebar.title("🔍 Navigation")
 page = st.sidebar.radio(
     "Go to",
-    ["📊 Main Dashboard","📈 Advanced Analytics","📈 BU & Region Trends","🔥 SLA Heatmap","📘 User Guide"]
+    ["📊 Main Dashboard","📈 Advanced Analytics","📈 BU & Region Trends","🔥 SLA Heatmap","🧠 Enhancements","📘 User Guide"]
 )
 
 # Sidebar: email import
