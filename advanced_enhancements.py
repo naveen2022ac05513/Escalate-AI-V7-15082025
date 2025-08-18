@@ -131,22 +131,17 @@ def validate_escalation_schema():
 
 # 🧾 Audit Logger
 def log_escalation_action(action_type, case_id, user, details):
+    ensure_audit_log_table()  # make sure schema is correct before inserting
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS audit_log (
-        timestamp TEXT,
-        action_type TEXT,
-        case_id TEXT,
-        user TEXT,
-        details TEXT
-    )
-    ''')
-    cursor.execute('''
-    INSERT INTO audit_log VALUES (?, ?, ?, ?, ?)
-    ''', (datetime.datetime.now().isoformat(), action_type, case_id, user, details))
+    cur = conn.cursor()
+    ts = datetime.datetime.now().isoformat()
+    cur.execute("""
+        INSERT INTO audit_log (timestamp, action_type, case_id, user, details)
+        VALUES (?, ?, ?, ?, ?)
+    """, (str(ts), str(action_type or ""), str(case_id or ""), str(user or ""), str(details or "")))
     conn.commit()
     conn.close()
+
 
 # 🧬 Duplicate Detection
 def detect_cosine_duplicates(df, threshold=0.85):
@@ -196,22 +191,43 @@ def fetch_escalations():
 # --- Audit log helpers ---
 import sqlite3
 
-def ensure_audit_log_table(db_path: str = 'escalations.db'):
-    try:
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS audit_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
-                user TEXT,
-                action TEXT,
-                details TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log (timestamp)
-        """)
+def ensure_audit_log_table():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    desired = ["timestamp", "action_type", "case_id", "user", "details"]
+
+    # Create if missing
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='audit_log'")
+    exists = cur.fetchone() is not None
+    if not exists:
+        cur.execute("""
+        CREATE TABLE audit_log (
+            timestamp  TEXT,
+            action_type TEXT,
+            case_id    TEXT,
+            user       TEXT,
+            details    TEXT
+        )""")
+        conn.commit()
         conn.close()
-        return True
-    except Exception:
-        return False
+        return
+
+    # Check schema; migrate if different
+    cur.execute("PRAGMA table_info(audit_log)")
+    cols = [r[1] for r in cur.fetchall()]
+    if cols != desired:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS audit_log_new (
+            timestamp  TEXT,
+            action_type TEXT,
+            case_id    TEXT,
+            user       TEXT,
+            details    TEXT
+        )""")
+        # copy what we can in correct order
+        sel = ",".join([c if c in cols else "NULL" for c in desired])
+        cur.execute(f"INSERT INTO audit_log_new ({','.join(desired)}) SELECT {sel} FROM audit_log")
+        cur.execute("DROP TABLE audit_log")
+        cur.execute("ALTER TABLE audit_log_new RENAME TO audit_log")
+        conn.commit()
+    conn.close()
