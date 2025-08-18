@@ -33,6 +33,22 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
+# Enhancement dashboard import (robust)
+try:
+    from enhancement_dashboard import show_enhancement_dashboard
+except Exception:
+    import importlib.util, os
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _ed_path = os.path.join(_here, "enhancement_dashboard.py")
+    if os.path.exists(_ed_path):
+        _spec = importlib.util.spec_from_file_location("enhancement_dashboard", _ed_path)
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)  # type: ignore
+        show_enhancement_dashboard = getattr(_mod, "show_enhancement_dashboard")
+    else:
+        def show_enhancement_dashboard():
+            st.info("Enhancement dashboard not available.")
+
 # Optional TF-IDF for duplicate detection
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -1238,7 +1254,8 @@ elif page == "🧠 Enhancements":
     try:
         show_enhancement_dashboard()
     except Exception as e:
-        st.warning(f"Enhancement dashboard not available. ({type(e).__name__}: {e})")
+        st.error(f"Enhancement dashboard failed: {type(e).__name__}: {e}")
+
 
 elif page == "📘 User Guide":
     st.title("📘 EscalateAI — User Guide")
