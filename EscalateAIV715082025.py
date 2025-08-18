@@ -1230,8 +1230,11 @@ elif page == "📈 BU & Region Trends":
 
 elif page == "🔥 SLA Heatmap":
     st.subheader("🔥 SLA Heatmap")
-    try: render_sla_heatmap()
-    except Exception as e: st.error(f"❌ SLA Heatmap failed: {type(e).__name__}: {str(e)}")
+    try:
+        # enhancements.render_sla_heatmap() loads its own data
+        render_sla_heatmap()
+    except Exception as e:
+        st.error(f"❌ SLA Heatmap failed to render: {type(e).__name__}: {e}")
 
 elif page == "🧠 Enhancements":
     # Safe guard — if enhancement dashboard imports but fails internally, we still keep app alive
