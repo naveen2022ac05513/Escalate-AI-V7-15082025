@@ -89,11 +89,15 @@ def _safe_send_whatsapp(phone, message):
 # ============================================================================
 
 # Enhancement dashboard import (guarded)
-try:
-    from enhancement_dashboard import show_enhancement_dashboard
-except Exception:
-    def show_enhancement_dashboard():
-        st.info("Enhancement dashboard not available.")
+
+from enhancement_dashboard import show_enhancement_dashboard
+show_enhancement_dashboard()
+
+#try:
+ #   from enhancement_dashboard import show_enhancement_dashboard
+#except Exception:
+ #   def show_enhancement_dashboard():
+  #      st.info("Enhancement dashboard not available.")
 
 # --- BU/Region bucketizer ---
 try:
