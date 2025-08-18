@@ -191,27 +191,3 @@ def fetch_escalations():
     finally:
         conn.close()
     return df
-
-
-# --- Audit log helpers ---
-import sqlite3
-
-def ensure_audit_log_table(db_path: str = 'escalations.db'):
-    try:
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS audit_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
-                user TEXT,
-                action TEXT,
-                details TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log (timestamp)
-        """)
-        conn.close()
-        return True
-    except Exception:
-        return False
