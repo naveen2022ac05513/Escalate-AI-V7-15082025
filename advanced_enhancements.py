@@ -1,9 +1,5 @@
 # advanced_enhancements.py
 # Utilities for analytics, SHAP, PDF generation, duplicate detection, and a robust audit log.
-# - Audit log is now schema-safe (explicit column list on INSERT) and will auto-migrate older schemas.
-# - DB path can be overridden with ESCALATEAI_DB_PATH env var.
-# - Safer SHAP helpers and PDF generation.
-# - Duplicate detection and email thread grouping unchanged in spirit, cleaned for reliability.
 
 import os
 import re
@@ -20,9 +16,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import classification_report
 import importlib.util
 
-# Optional deps (present in your code)
+# Optional deps (guarded)
 try:
-    import shap  # SHAP is optional; code guards if not available
+    import shap
 except Exception:
     shap = None
 
@@ -41,94 +37,66 @@ except Exception:
 # -----------------------------------------------------------------------------
 DB_PATH = os.getenv("ESCALATEAI_DB_PATH", "escalations.db")
 
-# -----------------------------------------------------------------------------
-# DB helpers (shared)
-# -----------------------------------------------------------------------------
 def _get_conn():
-    """Open a SQLite connection to the configured DB."""
     return sqlite3.connect(DB_PATH)
 
 # -----------------------------------------------------------------------------
-# 🔮 ETA Prediction (simple baseline)
+# ETA Prediction (simple baseline)
 # -----------------------------------------------------------------------------
 def predict_resolution_eta(df: pd.DataFrame):
-    """
-    Train a simple linear regression to estimate resolution hours from resolved cases.
-    Returns a callable: predict(case_dict) -> ETA hours (float).
-    """
     if df is None or df.empty:
-        def _null_predict(_case):
-            return np.nan
-        return _null_predict
+        return lambda _case: np.nan
 
     data = df.copy()
     if "status" not in data.columns:
-        def _null_predict(_case):
-            return np.nan
-        return _null_predict
+        return lambda _case: np.nan
 
     data = data[data["status"] == "Resolved"].copy()
     if data.empty:
-        def _null_predict(_case):
-            return np.nan
-        return _null_predict
+        return lambda _case: np.nan
 
-    # Compute duration in hours between first timestamp and status_update_date
     for col in ("timestamp", "status_update_date"):
         if col not in data.columns:
             data[col] = pd.NaT
-    data["duration_hours"] = (
-        pd.to_datetime(data["status_update_date"])
-        - pd.to_datetime(data["timestamp"])
-    ).dt.total_seconds() / 3600.0
 
-    # Keep reasonable rows only
+    data["duration_hours"] = (
+        pd.to_datetime(data["status_update_date"], errors="coerce")
+        - pd.to_datetime(data["timestamp"], errors="coerce")
+    ).dt.total_seconds() / 3600.0
     data = data.replace([np.inf, -np.inf], np.nan).dropna(subset=["duration_hours"])
     if data.empty:
-        def _null_predict(_case):
-            return np.nan
-        return _null_predict
+        return lambda _case: np.nan
 
-    # Categorical features
     feature_cols = ["sentiment", "urgency", "severity", "criticality"]
     for c in feature_cols:
         if c not in data.columns:
             data[c] = "unknown"
 
-    features = pd.get_dummies(data[feature_cols], dummy_na=True)
+    X = pd.get_dummies(data[feature_cols], dummy_na=True)
     y = data["duration_hours"].astype(float)
-
-    # Guard: nothing to fit
-    if features.empty or y.empty:
-        def _null_predict(_case):
-            return np.nan
-        return _null_predict
+    if X.empty or y.empty:
+        return lambda _case: np.nan
 
     model = LinearRegression()
-    model.fit(features, y)
+    model.fit(X, y)
 
     def predict(case: dict):
-        X = pd.get_dummies(pd.DataFrame([case], columns=feature_cols), dummy_na=True)
-        X = X.reindex(columns=model.feature_names_in_, fill_value=0)
+        X1 = pd.get_dummies(pd.DataFrame([case], columns=feature_cols), dummy_na=True)
+        X1 = X1.reindex(columns=model.feature_names_in_, fill_value=0)
         try:
-            return float(np.round(model.predict(X)[0], 2))
+            return float(np.round(model.predict(X1)[0], 2))
         except Exception:
             return np.nan
 
     return predict
 
 # -----------------------------------------------------------------------------
-# 🧠 SHAP Explanation
+# SHAP Explanation
 # -----------------------------------------------------------------------------
 def show_shap_explanation(model, case_features: dict):
-    """
-    Display a SHAP force plot explaining the 'likely_to_escalate' model for one case.
-    Works best with tree-based models. Silently no-ops if SHAP is unavailable.
-    """
     if shap is None:
         st.info("SHAP not installed; skipping explanation.")
         return
-
     try:
         explainer = shap.TreeExplainer(model)
         X = pd.get_dummies(pd.DataFrame([case_features]))
@@ -141,7 +109,6 @@ def show_shap_explanation(model, case_features: dict):
         except Exception:
             pass
 
-        # Handle binary/multiclass regressors/classifiers gracefully
         if isinstance(shap_values, list) and len(shap_values) > 1:
             base_value = getattr(explainer, "expected_value", [0, 0])[1]
             sv = shap_values[1]
@@ -154,19 +121,13 @@ def show_shap_explanation(model, case_features: dict):
     except Exception as e:
         st.warning(f"SHAP explanation unavailable: {e}")
 
-# -----------------------------------------------------------------------------
-# 🆕 SHAP Summary Plot
-# -----------------------------------------------------------------------------
 def generate_shap_plot(model=None, X_sample: pd.DataFrame = None):
-    """
-    Render a SHAP summary plot (feature impact across a sample).
-    """
     if shap is None:
         st.info("SHAP not installed; cannot generate plot.")
         return
     try:
         if model is None or X_sample is None or X_sample.empty:
-            st.info("No SHAP plot generated — missing model or sample data.")
+            st.info("No SHAP plot generated — missing model or data sample.")
             return
         explainer = shap.TreeExplainer(model)
         shap_values = explainer.shap_values(X_sample)
@@ -179,16 +140,21 @@ def generate_shap_plot(model=None, X_sample: pd.DataFrame = None):
         st.error(f"SHAP plot generation failed: {e}")
 
 # -----------------------------------------------------------------------------
-# 📄 PDF Report Generator (HTML → PDF)
+# PDF Generators
 # -----------------------------------------------------------------------------
+def fetch_escalations() -> pd.DataFrame:
+    conn = _get_conn()
+    try:
+        return pd.read_sql("SELECT * FROM escalations", conn)
+    except Exception:
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
 def generate_pdf_report(output_path: str = "report.pdf"):
-    """
-    Export the full escalations table to a styled PDF.
-    """
     if pisa is None:
         st.error("xhtml2pdf (pisa) not installed; cannot generate PDF.")
         return
-
     df = fetch_escalations()
     if df is None or df.empty:
         st.info("No data to include in the report.")
@@ -199,31 +165,11 @@ def generate_pdf_report(output_path: str = "report.pdf"):
     <head>
     <meta charset="utf-8" />
     <style>
-    body {{
-        font-family: Arial, sans-serif;
-        font-size: 12px;
-        color: #222;
-    }}
-    table {{
-        width: 100%;
-        border-collapse: collapse;
-        table-layout: fixed;
-        word-break: break-word;
-    }}
-    th, td {{
-        border: 1px solid #ccc;
-        padding: 6px 8px;
-        text-align: left;
-        vertical-align: top;
-        font-size: 11px;
-    }}
-    th {{
-        background-color: #f2f2f2;
-    }}
-    h2 {{
-        text-align: center;
-        color: #2c3e50;
-    }}
+    body {{ font-family: Arial, sans-serif; font-size: 12px; color: #222; }}
+    table {{ width: 100%; border-collapse: collapse; table-layout: fixed; word-break: break-word; }}
+    th, td {{ border: 1px solid #ccc; padding: 6px 8px; text-align: left; vertical-align: top; font-size: 11px; }}
+    th {{ background-color: #f2f2f2; }}
+    h2 {{ text-align: center; color: #2c3e50; }}
     </style>
     </head>
     <body>
@@ -239,9 +185,6 @@ def generate_pdf_report(output_path: str = "report.pdf"):
     except Exception as e:
         st.error(f"❌ PDF generation failed: {e}")
 
-# -----------------------------------------------------------------------------
-# 📊 Text Summary PDF (simple)
-# -----------------------------------------------------------------------------
 def generate_text_pdf(df: pd.DataFrame, output_path: str = "summary_report.pdf"):
     if FPDF is None:
         st.error("fpdf not installed; cannot generate text PDF.")
@@ -249,7 +192,6 @@ def generate_text_pdf(df: pd.DataFrame, output_path: str = "summary_report.pdf")
     if df is None or df.empty:
         st.info("No data to export.")
         return
-
     try:
         pdf = FPDF()
         pdf.add_page()
@@ -266,12 +208,9 @@ def generate_text_pdf(df: pd.DataFrame, output_path: str = "summary_report.pdf")
         st.error(f"❌ PDF summary failed: {e}")
 
 # -----------------------------------------------------------------------------
-# 📊 Model Metrics
+# Model Metrics
 # -----------------------------------------------------------------------------
 def render_model_metrics(model, X_test: pd.DataFrame, y_test: pd.Series):
-    """
-    Show sklearn classification report.
-    """
     if X_test is None or y_test is None or len(X_test) == 0 or len(y_test) == 0:
         st.info("No test data available for metrics.")
         return
@@ -284,24 +223,18 @@ def render_model_metrics(model, X_test: pd.DataFrame, y_test: pd.Series):
         st.error(f"Metrics rendering failed: {e}")
 
 # -----------------------------------------------------------------------------
-# 📝 Feedback Scoring (simple heuristic)
+# Feedback Scoring
 # -----------------------------------------------------------------------------
 def score_feedback_quality(notes: str) -> float:
-    """
-    Score feedback quality based on length (0..1). Tweak as needed.
-    """
     if not notes:
         return 0.0
     score = len(str(notes).split()) / 10.0
     return float(min(score, 1.0))
 
 # -----------------------------------------------------------------------------
-# 🧪 Escalations table schema validator/additions
+# Escalations table schema validator/additions
 # -----------------------------------------------------------------------------
 def validate_escalation_schema():
-    """
-    Ensure certain columns exist in 'escalations' (add as TEXT if missing).
-    """
     required_columns = ["owner_email", "status_update_date", "user_feedback", "likely_to_escalate"]
     conn = _get_conn()
     try:
@@ -316,18 +249,16 @@ def validate_escalation_schema():
         conn.close()
 
 # -----------------------------------------------------------------------------
-# 🧾 Robust Audit Logger (schema-safe + auto-migration)
+# Robust Audit Logger (schema-safe + auto-migration)
 # -----------------------------------------------------------------------------
 _AUDIT_TABLE = "audit_log"
-_AUDIT_CANON_COLS = ["timestamp", "action_type", "case_id", "user", "details"]  # canonical 5-text columns
+_AUDIT_CANON_COLS = ["timestamp", "action_type", "case_id", "user", "details"]  # all TEXT
 
 def _audit_table_info(cur) -> list:
-    """Return list of (name, type) for current audit_log table, or [] if missing."""
     cur.execute(f"PRAGMA table_info({_AUDIT_TABLE})")
     return [(r[1], r[2]) for r in cur.fetchall()]
 
 def _audit_create(cur):
-    """Create audit_log with canonical schema if missing."""
     cur.execute(f"""
         CREATE TABLE IF NOT EXISTS {_AUDIT_TABLE} (
             timestamp   TEXT NOT NULL,
@@ -340,26 +271,22 @@ def _audit_create(cur):
     cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{_AUDIT_TABLE}_ts ON {_AUDIT_TABLE}(timestamp)")
 
 def _audit_migrate_if_needed(cur):
-    """
-    If an older/alternate schema exists (e.g., with an 'id' column or different names),
-    migrate to the canonical 5-column TEXT schema and copy what we can.
-    """
     info = _audit_table_info(cur)
     if not info:
         _audit_create(cur)
         return
 
     existing_cols = [c for c, _t in info]
-    # If all canonical columns exist, keep as-is (index ensured)
+
+    # If table already matches canonical 5 TEXT columns, just ensure index and return
     if all(c in existing_cols for c in _AUDIT_CANON_COLS) and len(existing_cols) == len(_AUDIT_CANON_COLS):
-        cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{_AUDIT_TABLE}_ts ON {_AUDIT_TABLE}(timestamp)")
+        _audit_create(cur)  # ensures index
         return
 
-    # Otherwise rename & recreate
+    # Otherwise rename & recreate to canonical schema, then copy intersecting cols
     cur.execute(f"ALTER TABLE {_AUDIT_TABLE} RENAME TO {_AUDIT_TABLE}_old")
     _audit_create(cur)
 
-    # Copy intersection columns from old to new
     intersection = [c for c in _AUDIT_CANON_COLS if c in existing_cols]
     if intersection:
         cols_csv = ", ".join(intersection)
@@ -370,9 +297,6 @@ def _audit_migrate_if_needed(cur):
     cur.execute(f"DROP TABLE IF EXISTS {_AUDIT_TABLE}_old")
 
 def ensure_audit_log_table():
-    """
-    Public helper: Create or fix the audit_log schema to the canonical 5 columns.
-    """
     conn = _get_conn()
     try:
         cur = conn.cursor()
@@ -384,7 +308,8 @@ def ensure_audit_log_table():
 
 def log_escalation_action(action_type: str, case_id: str, user: str, details: str):
     """
-    Append a row to the audit log using explicit columns (order-safe).
+    Append a row to the audit log using explicit columns (order-safe, type-safe).
+    This also self-heals the audit_log schema before writing.
     """
     ensure_audit_log_table()
     ts = datetime.datetime.now().isoformat(timespec="seconds")
@@ -402,18 +327,14 @@ def log_escalation_action(action_type: str, case_id: str, user: str, details: st
         conn.close()
 
 # -----------------------------------------------------------------------------
-# 🧬 Duplicate Detection (TF-IDF cosine)
+# Duplicate Detection
 # -----------------------------------------------------------------------------
 def detect_cosine_duplicates(df: pd.DataFrame, threshold: float = 0.85):
-    """
-    Return list of (id1, id2) pairs considered duplicates by cosine similarity.
-    """
     if df is None or df.empty or "issue" not in df.columns:
         return []
     issues = df["issue"].fillna("").astype(str).tolist()
     if not issues:
         return []
-
     try:
         vectors = TfidfVectorizer().fit_transform(issues)
         sim = cosine_similarity(vectors)
@@ -432,13 +353,9 @@ def detect_cosine_duplicates(df: pd.DataFrame, threshold: float = 0.85):
     return duplicates
 
 # -----------------------------------------------------------------------------
-# 📧 Email Thread Grouping (heuristic)
+# Email Thread Grouping (heuristic)
 # -----------------------------------------------------------------------------
 def link_email_threads(df: pd.DataFrame):
-    """
-    Add a 'thread_id' based on simplified subject/issue prefix (strip 'Re:'/'Fwd:').
-    Returns a groupby object by 'thread_id'.
-    """
     if df is None or df.empty:
         return pd.DataFrame().groupby([])  # harmless no-op
 
@@ -447,7 +364,6 @@ def link_email_threads(df: pd.DataFrame):
             return ""
         s = str(x)
         s = re.sub(r"^(Re:|Fwd:)\s*", "", s, flags=re.IGNORECASE)
-        # Use prefix before dash as coarse thread signal
         base = s.split("-")[0]
         return base.strip().lower()
 
@@ -457,12 +373,9 @@ def link_email_threads(df: pd.DataFrame):
     return df.groupby("thread_id")
 
 # -----------------------------------------------------------------------------
-# 🔌 Lightweight Plugin Loader
+# Lightweight Plugin Loader
 # -----------------------------------------------------------------------------
 def load_custom_plugins(path: str = "plugins/"):
-    """
-    Dynamically import all .py files in the given path.
-    """
     if not os.path.isdir(path):
         return
     for file in os.listdir(path):
@@ -478,14 +391,11 @@ def load_custom_plugins(path: str = "plugins/"):
             st.warning(f"Failed to load plugin {file}: {e}")
 
 # -----------------------------------------------------------------------------
-# 📲 WhatsApp API (placeholder)
+# WhatsApp (placeholder)
 # -----------------------------------------------------------------------------
 def send_whatsapp_message(phone: str, message: str) -> bool:
-    """
-    Placeholder WhatsApp sender. Replace with real provider (e.g., Twilio/Meta Cloud API).
-    """
     try:
-        url = os.getenv("WHATSAPP_API_URL", "https://api.twilio.com/...")  # replace
+        url = os.getenv("WHATSAPP_API_URL", "https://api.twilio.com/...")  # replace with real
         token = os.getenv("WHATSAPP_API_TOKEN", "YOUR_TOKEN")
         payload = {"to": str(phone), "body": str(message)}
         headers = {"Authorization": f"Bearer {token}"}
@@ -494,18 +404,3 @@ def send_whatsapp_message(phone: str, message: str) -> bool:
     except Exception as e:
         st.warning(f"WhatsApp send failed: {e}")
         return False
-
-# -----------------------------------------------------------------------------
-# 📥 DB Fetch Helper
-# -----------------------------------------------------------------------------
-def fetch_escalations() -> pd.DataFrame:
-    """
-    Load the full escalations table.
-    """
-    conn = _get_conn()
-    try:
-        return pd.read_sql("SELECT * FROM escalations", conn)
-    except Exception:
-        return pd.DataFrame()
-    finally:
-        conn.close()
