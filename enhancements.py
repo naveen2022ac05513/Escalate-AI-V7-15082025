@@ -86,16 +86,62 @@ def generate_pdf_report():
     except Exception as e:
         print(f"❌ PDF generation failed: {e}")
 
-# 🔥 SLA Heatmap Visualization
+# 🔥 SLA Heatmap Visualization (age buckets; zero-arg)
 def render_sla_heatmap():
     df = fetch_escalations()
-    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-    df['hour'] = df['timestamp'].dt.hour
-    heatmap_data = df.pivot_table(index='category', columns='hour', values='id', aggfunc='count').fillna(0)
-    st.subheader("🔥 SLA Breach Heatmap")
+    if df is None or df.empty:
+        st.info("No data for SLA heatmap.")
+        return
+
+    # keep only Open / In Progress
+    if "status" in df.columns:
+        df = df[df["status"].astype(str).isin(["Open", "In Progress"])]
+
+    if "timestamp" not in df.columns:
+        st.info("Missing 'timestamp' column for SLA heatmap.")
+        return
+
+    # compute age in hours
+    now = pd.Timestamp.now(tz=None)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    if "closed_at" in df.columns:
+        df["closed_at"] = pd.to_datetime(df["closed_at"], errors="coerce")
+        end_time = df["closed_at"].where(df["closed_at"].notna(), other=now)
+    else:
+        end_time = pd.Series(now, index=df.index)
+    df["age_hours"] = (end_time - df["timestamp"]).dt.total_seconds() / 3600.0
+
+    # age buckets
+    bins   = [-np.inf, 4, 12, np.inf]
+    labels = ["≤ 4h", "4–12h", "> 12h"]
+    df["age_bucket"] = pd.cut(df["age_hours"], bins=bins, labels=labels, right=True)
+
+    # pick a row dimension (fallbacks)
+    for candidate in ["category", "severity", "business_unit", "owner"]:
+        if candidate in df.columns:
+            index_col = candidate
+            break
+    else:
+        st.info("No suitable column for rows (tried category, severity, business_unit, owner).")
+        return
+
+    # pivot: rows = dimension, cols = age bucket
+    values_col = "id" if "id" in df.columns else df.columns[0]
+    heatmap_data = pd.pivot_table(df, index=index_col, columns="age_bucket",
+                                  values=values_col, aggfunc="count", fill_value=0)
+    heatmap_data = heatmap_data.reindex(columns=labels, fill_value=0)
+    if heatmap_data.empty:
+        st.info("No data after filtering to Open/In Progress.")
+        return
+
+    st.subheader("🔥 SLA Heatmap (Open & In Progress)")
     fig, ax = plt.subplots()
-    sns.heatmap(heatmap_data, ax=ax, cmap="Reds")
+    sns.heatmap(heatmap_data, ax=ax, cmap="Reds", annot=True, fmt="d",
+                cbar_kws={"label": "Count"})
+    ax.set_xlabel("Age bucket")
+    ax.set_ylabel(index_col.replace("_", " ").title())
     st.pyplot(fig)
+
 
 # 🌙 Dark Mode Toggle
 def apply_dark_mode():
