@@ -89,10 +89,6 @@ def _safe_send_whatsapp(phone, message):
 # ============================================================================
 
 # Enhancement dashboard import (guarded)
-
-#from enhancement_dashboard import show_enhancement_dashboard
-#show_enhancement_dashboard()
-
 try:
     from enhancement_dashboard import show_enhancement_dashboard
 except Exception:
