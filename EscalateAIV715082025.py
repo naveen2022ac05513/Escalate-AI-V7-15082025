@@ -1298,21 +1298,6 @@ elif page == "⚙️ Admin Tools":
                 st.error(f"❌ Schema validation failed: {e}")
 
         st.subheader("📄 Audit Log Preview")
-        # --- One-time audit_log reset button (DANGER: erases audit history) ---
-        from advanced_enhancements import drop_and_recreate_audit_log
-
-        with st.expander("🧹 Maintenance: Audit Log"):
-            st.warning("This will DELETE and recreate the audit_log table. Use only once to fix schema issues.")
-            if st.button("🧨 Force-recreate audit_log (one-time)"):
-                ok, msg = drop_and_recreate_audit_log()
-                if ok:
-                    st.success(msg)
-                    # write a first entry so you can see it works
-                    from advanced_enhancements import log_escalation_action
-                    log_escalation_action("init", "N/A", "system", "Recreated audit_log via admin button")
-                else:
-                    st.error(msg)
-
         try:
             ensure_audit_log_table()
             log_escalation_action("init","N/A","system","Initializing audit log table")
