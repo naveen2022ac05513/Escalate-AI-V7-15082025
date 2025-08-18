@@ -1233,12 +1233,12 @@ elif page == "🔥 SLA Heatmap":
     try: render_sla_heatmap()
     except Exception as e: st.error(f"❌ SLA Heatmap failed: {type(e).__name__}: {str(e)}")
 
-#elif page == "🧠 Enhancements":
+elif page == "🧠 Enhancements":
     # Safe guard — if enhancement dashboard imports but fails internally, we still keep app alive
- #   try:
-  #      show_enhancement_dashboard()
-   # except Exception as e:
-    #    st.warning(f"Enhancement dashboard not available. ({type(e).__name__}: {e})")
+    try:
+        show_enhancement_dashboard()
+    except Exception as e:
+        st.warning(f"Enhancement dashboard not available. ({type(e).__name__}: {e})")
 
 elif page == "📘 User Guide":
     st.title("📘 EscalateAI — User Guide")
