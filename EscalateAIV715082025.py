@@ -1075,7 +1075,8 @@ if page == "📊 Main Dashboard":
                                 if st.button("💾 Save", key=f"{prefix}_save"):
                                     update_escalation_status(case_id, new_status, action_taken, owner, owner_email)
                                     st.success("✅ Saved")
-                               
+                                
+                            
                             with rc_email:
                                  n1_email = st.text_input("N+1 Email", key=f"{prefix}_n1", placeholder="name@example.com")
 
