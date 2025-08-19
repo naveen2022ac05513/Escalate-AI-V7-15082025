@@ -1072,31 +1072,12 @@ if page == "📊 Main Dashboard":
                             rc_save, rc_email, rc_escalate = st.columns([0.9, 2.0, 1.1])
 
                             with rc_save:
-                                #if st.button("💾 Save", key=f"{prefix}_save"):
-                                 #   update_escalation_status(case_id, new_status, action_taken, owner, owner_email)
-                                 #   st.success("✅ Saved")
-                                if st.button("💾 Save Changes", key=f"{prefix}_save"):
-                                    update_escalation_status(row['id'], new_status, new_action, new_owner, new_owner_email)
-                                    st.success("Escalation updated.")
-                                notification_message = f"""
-🔔 Hello {new_owner},
-The escalation case #{row['id']} assigned to you has been updated:
-• Status: {new_status}
-• Action Taken: {new_action}
-• Category: {category}
-• Severity: {severity.capitalize()}
-• Urgency: {urgency.capitalize()}
-• Sentiment: {sentiment}
-Please review the updates on the EscalateAI dashboard.
-                                """.strip()
-                                if new_owner_email:
-                                    send_alert(notification_message, via="email", recipient=new_owner_email)
-                                    send_alert(notification_message, via="teams")
-                    except Exception as e:
-                        st.error(f"Error rendering case #{row.get('id', 'Unknown')}: {e}")
-
+                                if st.button("💾 Save", key=f"{prefix}_save"):
+                                    update_escalation_status(case_id, new_status, action_taken, owner, owner_email)
+                                    st.success("✅ Saved")
+                               
                             with rc_email:
-                                n1_email = st.text_input("N+1 Email", key=f"{prefix}_n1", placeholder="name@example.com")
+                                 n1_email = st.text_input("N+1 Email", key=f"{prefix}_n1", placeholder="name@example.com")
 
                             with rc_escalate:
                                 if st.button("🚀 N+1", key=f"{prefix}_n1btn"):
