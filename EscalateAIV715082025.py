@@ -1072,32 +1072,11 @@ if page == "📊 Main Dashboard":
                             rc_save, rc_email, rc_escalate = st.columns([0.9, 2.0, 1.1])
 
                             with rc_save:
-                                #if st.button("💾 Save", key=f"{prefix}_save"):
-                                 #   update_escalation_status(case_id, new_status, action_taken, owner, owner_email)
-                                  #  st.success("✅ Saved")
- 
-                                if st.button("💾 Save ", key=f"save_{case_id}"):
+                                if st.button("💾 Save", key=f"{prefix}_save"):
                                     update_escalation_status(case_id, new_status, action_taken, owner, owner_email)
-                                    st.success("Escalation updated.")
-                                
-                                    notification_message = f"""
-                                    🔔 Hello {owner_email},
-                                
-                                    The escalation case #{case_id} assigned to you has been updated:
-                                
-                                    • Status: {new_status}
-                                    • Action Taken: {action_taken}
-                                    • Category: {row['category']}
-                                    • Severity: {row['severity']}
-                                    • Urgency: {row['urgency']}
-                                    • Sentiment: {row['sentiment']}
-                                
-                                    Please review the updates on the EscalateAI dashboard.
-                                    """
-                                
-                                    send_alert(notification_message.strip(), via="email", recipient=owner_email)
-                                    send_alert(notification_message.strip(), via="teams", recipient=owner_email)
-                            
+                                    st.success("✅ Saved")
+ 
+                                                        
                             with rc_email:
                                  n1_email = st.text_input("N+1 Email", key=f"{prefix}_n1", placeholder="name@example.com")
 
