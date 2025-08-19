@@ -1076,7 +1076,7 @@ if page == "📊 Main Dashboard":
                                  #   update_escalation_status(case_id, new_status, action_taken, owner, owner_email)
                                   #  st.success("✅ Saved")
  
-                                if st.button("💾 Save Changes", key=f"save_{row['id']}"):
+                                if st.button("💾 Save ", key=f"save_{row['id']}"):
                                     update_escalation_status(case_id, new_status, action_taken, owner, owner_email)
                                     st.success("Escalation updated.")
                                 
