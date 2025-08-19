@@ -1077,26 +1077,26 @@ if page == "📊 Main Dashboard":
                                   #  st.success("✅ Saved")
                                  
                                 if st.button("💾 Save Changes", key=f"save_{case_id}"):
-                                    update_escalation_status(case_id, new_status, action_taken, owner, owner_emai)
-                                    st.success("Escalation updated.")
-                                                
-                                    notification_message = f"""
-                                    🔔 Hello {owner},
-                                                
-                                    The escalation case #{case_id} assigned to you has been updated:
-                                                
-                                    • Status: {new_status}
-                                    • Action Taken: {action_taken}
-                                    • Category: {row['category']}
-                                    • Severity: {row['severity']}
-                                    • Urgency: {row['urgency']}
-                                    • Sentiment: {row['sentiment']}
-                                                
-                                     Please review the updates on the EscalateAI dashboard.
-                                     """
-                                                
-                                     send_alert(notification_message.strip(), via="email", recipient=owner_emai)
-                                     send_alert(notification_message.strip(), via="teams", recipient=owner_emai)
+                                    update_escalation_status(case_id, new_status, action_taken, owner, owner_email)
+                                        st.success("Escalation updated.")
+                                                    
+                                        notification_message = f"""
+                                        🔔 Hello {owner},
+                                                    
+                                        The escalation case #{case_id} assigned to you has been updated:
+                                                    
+                                        • Status: {new_status}
+                                        • Action Taken: {action_taken}
+                                        • Category: {row['category']}
+                                        • Severity: {row['severity']}
+                                        • Urgency: {row['urgency']}
+                                        • Sentiment: {row['sentiment']}
+                                                    
+                                         Please review the updates on the EscalateAI dashboard.
+                                         """
+                                                    
+                                         send_alert(notification_message.strip(), via="email", recipient=owner_email)
+                                         send_alert(notification_message.strip(), via="teams", recipient=owner_email)
 
                                                         
                             with rc_email:
