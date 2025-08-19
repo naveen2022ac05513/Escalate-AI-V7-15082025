@@ -1086,7 +1086,7 @@ if page == "📊 Main Dashboard":
                                     The escalation case #{case_id} assigned to you has been updated:
                                 
                                     • Status: {new_status}
-                                    • Action Taken: {new_action}
+                                    • Action Taken: {action_taken}
                                     • Category: {row['category']}
                                     • Severity: {row['severity']}
                                     • Urgency: {row['urgency']}
