@@ -1,4 +1,5 @@
 # Escalate-AI-V7-15082025
+Escalate AI
 Objective: Implement an AI-based tool to log, classify, and predict customer escalations, ensuring systematic handling based on severity, criticality, and importance.
 
 Tool Name: EscalateAI
@@ -25,6 +26,8 @@ Predictive Insights:
 AI Models: Leverage AI models to provide predictive insights and recommendations to address potential escalations before they occur.
 Continuous Learning: Continuously improve the accuracy of escalation identification and management through feedback.
 <img width="2718" height="681" alt="image" src="https://github.com/user-attachments/assets/a390639b-441c-4e89-9633-3fc3bf12a14f" />
+
+Benefit:
 Early Detection of issues and Prevention : Helping to detect, control and act on the issue before the escalation
 Customer Trust and Retention: Efficiently handling escalations helps customers feel valued and heard, which can enhance trust and loyalty.
 Brand Reputation: Unresolved escalations can lead to dissatisfaction, potentially damaging the company's reputation.
