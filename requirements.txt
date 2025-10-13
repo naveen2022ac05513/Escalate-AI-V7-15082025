@@ -22,6 +22,7 @@ rapidfuzz>=2.13.7           # 🧪 Fuzzy deduplication
 pdfkit>=1.0.0               # 📄 PDF report generation
 PyPDF2>=3.0.1               # Optional: PDF manipulation if needed
 streamlit-authenticator>=0.2.2  # 🔐 Role-based access control
+cairocffi>=1.6.1         # ✅ Add this line — avoids native pycairo build errors
 xhtml2pdf>=0.2.5
 fpdf
 shap
